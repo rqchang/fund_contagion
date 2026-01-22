@@ -3,27 +3,27 @@
 # ================================================================= #
 # Description:
 # ------------
-#     This downloads and saves CRSP auxiliary tables.
-#     It uses RPostgres direct download.
+#   This downloads and saves CRSP auxiliary tables.
+#   It uses RPostgres direct download.
 #
 # Input(s):
 # ---------
-#     WRDS connection
+#   WRDS connection
 #
 # Output(s):
 # ----------
-#     CRSP raw data:
-#     raw/CRSP/crspq_ccmxpf_lnkhist.rds
-#     raw/CRSP/stocknames.rds
+#   CRSP raw data:
+#     data/raw/crsp/crspq_ccmxpf_lnkhist.rds
+#     data/raw/crsp/stocknames.rds
 #
 # Date:
 # ----------
-#     2022-05-12
-#     update: 2023-11-07
+#   2026-01-22
+#   update:
 #
 # Author(s):
 # ----------
-#     Lira Mota Mertens, liramota@mit.edu
+#   Ruiquan Chang, chang.2590@osu.edu
 #
 # Additional note(s):
 # ----------
@@ -44,7 +44,6 @@ library(RPostgres)
 
 # Source helper scripts
 source('utils/setPaths.R')
-source('utils/wrds_credentials.R')
 
 # Create database connections
 wrds <- dbConnect(Postgres(),

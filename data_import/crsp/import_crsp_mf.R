@@ -3,31 +3,32 @@
 # ================================================================= #
 # Description:
 # ------------
-#     This file downloads and saves CRSP Mutual Fund data from 2000 till now.
-#     It uses RPostgres direct download.
+#   This file downloads and saves CRSP Mutual Fund data from 2000 till now.
+#   It uses RPostgres direct download.
 #
 # Input(s):
 # ---------
-#     WRDS connection
+#   WRDS connection
 #
 # Output(s):
 # ----------
-#     CRSP MF raw data:
-#     Data/raw/crsp/crsp_mf_holdings_cusip.rds
-#     Data/raw/crsp/crsp_mf_sum.rds
-#     Data/raw/crsp/crsp_mf_hdr.rds
-#     Data/raw/crsp/crsp_mf_mret.rds
-#     Data/raw/crsp/crsp_mf_mtna.rds
-#     Data/raw/crsp/crsp_portno_link.rds
+#   CRSP MF raw data:
+#     data/raw/crsp/crsp_mf_holdings_cusip.rds
+#     data/raw/crsp/crsp_mf_sum.rds
+#     data/raw/crsp/crsp_mf_hdr.rds
+#     data/raw/crsp/crsp_mf_mret.rds
+#     data/raw/crsp/crsp_mf_mtna.rds
+#     data/raw/crsp/
+#     data/raw/crsp/crsp_portno_link.rds
 #
 # Date:
 # ----------
-#     2026-01-21
-#     update:
+#   2026-01-21
+#   update:
 #
 # Author(s):
 # ----------
-#     Ruiquan Chang, chang.2590@osu.edu
+#   Ruiquan Chang, chang.2590@osu.edu
 #
 # Additional note(s):
 # ----------
@@ -80,10 +81,8 @@ cmf <- as.data.table(cmf)
 #-----------------------------------------#
 # fund summary
 varlist_sum <- c('caldt', 'crsp_fundno', 'tna_latest', 'summary_period', 'maturity', 'maturity_dt')
-fund_sum <- dbGetQuery(wrds, 
-                       sprintf("SELECT %s FROM crsp.fund_summary
-                                WHERE caldt >= '01/01/2000'",
-                               paste(c(varlist_sum), collapse = ',')))
+fund_sum <- dbGetQuery(wrds, "SELECT * FROM crsp.fund_summary
+                                WHERE caldt >= '01/01/2000'")
 fund_sum <- as.data.table(fund_sum)
 
 # fund hdr
@@ -96,7 +95,7 @@ varlist_tna <- c('caldt', 'crsp_fundno', 'mtna')
 fund_tna <- dbGetQuery(wrds, 
                        sprintf("SELECT %s FROM crsp.monthly_tna
                                 WHERE caldt >= '01/01/2000'",
-                               paste(c(varlist_sum), collapse = ',')))
+                               paste(c(varlist_tna), collapse = ',')))
 fund_tna <- as.data.table(fund_tna)
 
 #-----------------------------------------#
@@ -108,6 +107,12 @@ fund_ret <- dbGetQuery(wrds,
                                 WHERE caldt >= '01/01/2000'",
                                paste(c(varlist_ret), collapse = ',')))
 fund_ret <- as.data.table(fund_ret)
+
+#-----------------------------------------#
+# 5. Get merged data of tna, ret, and nav
+#-----------------------------------------#
+fundm <- dbGetQuery(wrds, "SELECT * FROM crsp.monthly_tna_ret_nav WHERE caldt >= '01/01/2000'")
+fundm <- as.data.table(fundm)
 
 #-----------------------------------------#
 # 5. Get data from portno map
@@ -124,7 +129,7 @@ link <- as.data.table(link)
 # Write data ####
 # ================================================================= #
 #-----------------------------------------#
-# 1. MF holdings
+# 1. MF fund-bond-month level holdings
 #-----------------------------------------#
 # only keep if there is a cusip
 vcmf <- cmf[!is.na(cusip), ]
@@ -140,13 +145,14 @@ saveRDS(vcmf, file = paste0(RAWDIR, 'crsp/crsp_mf_holdings_cusip.rds'))
 write.csv(vcmf, paste0(RAWDIR, 'crsp/crsp_mf_holdings_cusip.csv'), row.names = FALSE)
 
 #-----------------------------------------#
-# 2. MF summary
+# 2. MF fund level summary
 #-----------------------------------------#
 # save files
 saveRDS(fund_sum, file = paste0(RAWDIR, 'crsp/crsp_mf_sum.rds'))
 saveRDS(hdr, file = paste0(RAWDIR, 'crsp/crsp_mf_hdr.rds'))
 saveRDS(fund_tna, file = paste0(RAWDIR, 'crsp/crsp_mf_mtna.rds'))
 saveRDS(fund_ret, file = paste0(RAWDIR, 'crsp/crsp_mf_mret.rds'))
+saveRDS(fundm, file = paste0(RAWDIR, 'crsp/crsp_mf_fundm.rds'))
 saveRDS(link, file = paste0(RAWDIR, 'crsp/crsp_portno_link.rds'))
 
 

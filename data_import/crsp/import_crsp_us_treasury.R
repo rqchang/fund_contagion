@@ -75,12 +75,12 @@ source('utils/wrds_credentials.R')
 
 # Create database connections
 wrds <- dbConnect(Postgres(),
-                  host='wrds-pgdata.wharton.upenn.edu',
-                  port=9737,
-                  user= wrds_username,
-                  password= wrds_password,
-                  sslmode='require',
-                  dbname='wrds')
+                  host = 'wrds-pgdata.wharton.upenn.edu',
+                  port = 9737,
+                  user = 'rqchang99',
+                  password = 'Crq-19990711',
+                  sslmode ='require',
+                  dbname ='wrds')
 
 
 #================================================================== #

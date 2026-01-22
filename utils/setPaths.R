@@ -13,7 +13,7 @@ if(Sys.info()['sysname']=="Linux"){
            DATADIR <- "D:/Dropbox/project/fund_contagion/data"
            RAWDIR <- "D:/Dropbox/project/fund_contagion/data/raw/"
            TEMPDIR <- "D:/Dropbox/project/fund_contagion/data/temp/"
-           PROCDIR <- "D:/Dropbox/project/fund_contagion/data/data/processed/"
+           PROCDIR <- "D:/Dropbox/project/fund_contagion/data/processed/"
            OUTDIR <- "D:/Dropbox/project/fund_contagion/outputs/"
            PLOTSDIR <- "D:/Dropbox/project/fund_contagion/outputs/plots/"
            TABLESDIR <- "D:/Dropbox/project/fund_contagion/outputs/tables/"
