@@ -26,12 +26,13 @@
 # Date:
 # ------------
 #   2022-05-11
-#   update: 2026-01-22
+#   update: 2026-01-23
 #
 # Author(s):
 # ------------
 #   Lira Mota Mertens, liramota@mit.edu
 #   Ruiquan Chang, chang.2590@osu.edu
+#   Ziqi Li, ziqili7@illinois.edu
 #
 # Additional note(s):
 # ----------
@@ -155,15 +156,17 @@ library(lubridate)
 
 # Source helper scripts
 source('utils/setPaths.R')
+source('utils/wrds_credentials.R')
 
 # Create database connections
+creds <- get_wrds_credentials()
 wrds <- dbConnect(Postgres(),
-                  host = 'wrds-pgdata.wharton.upenn.edu',
-                  port = 9737,
-                  user = 'rqchang99',
-                  password = 'Crq-19990711',
-                  sslmode ='require',
-                  dbname ='wrds')
+                  host='wrds-pgdata.wharton.upenn.edu',
+                  port=9737,
+                  user = creds$username,
+                  password = creds$password,
+                  sslmode='require',
+                  dbname='wrds')
 
 
 # ================================================================= #
@@ -173,6 +176,16 @@ wrds <- dbConnect(Postgres(),
 issue <- dbGetQuery(wrds, "SELECT * FROM fisd.fisd_issue")
 issue <- as.data.table(issue)
 issue[, range(offering_date, na.rm = TRUE)]
+issue[!is.na(offering_date) & year(offering_date)>2026]
+
+# Manual Fix
+issue[issue_id==1090232, offering_date := as.Date("2023-06-29")]
+issue[issue_id==1075603, offering_date := as.Date("2023-03-15")]
+issue[issue_id==1123201, offering_date := as.Date("2024-02-02")]
+issue[issue_id==1135518, offering_date := as.Date("2024-04-23")]
+issue[issue_id==1163751, offering_date := as.Date("2024-09-07")]
+
+issue[!is.na(offering_date) & year(offering_date)>2026]
 
 # Bond Issuer Merged ------------------------------------------------------
 # Merged has exactly the same number of lines as issuer, but with more info.

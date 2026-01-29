@@ -44,13 +44,15 @@ library(RPostgres)
 
 # Source helper scripts
 source('utils/setPaths.R')
+source('utils/wrds_credentials.R')
 
 # Create database connections
+creds <- get_wrds_credentials()
 wrds <- dbConnect(Postgres(),
                   host='wrds-pgdata.wharton.upenn.edu',
                   port=9737,
-                  user= wrds_username,
-                  password= wrds_password,
+                  user = creds$username,
+                  password = creds$password,
                   sslmode='require',
                   dbname='wrds')
 
@@ -72,8 +74,8 @@ names <- as.data.table(names)
 # ================================================================= #
 # Write data ####
 # ================================================================= #
-saveRDS(link_cc, paste0(RAWDIR, 'CRSP/crspq_ccmxpf_lnkhist.rds'))
-saveRDS(names, paste0(RAWDIR, 'CRSP/stocknames.rds'))
+saveRDS(link_cc, paste0(RAWDIR, 'crsp/crspq_ccmxpf_lnkhist.rds'))
+saveRDS(names, paste0(RAWDIR, 'crsp/stocknames.rds'))
 dbDisconnect(wrds)
 
 print('We are in import_crsp_auxiliaries. 

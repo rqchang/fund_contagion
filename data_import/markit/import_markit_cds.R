@@ -3,17 +3,17 @@
 #=======================================================================================#
 # Description:
 # -------------
-#     This script downloads and saves Markit CDS data.
-#     It uses RPostgres direct download.
+#   This script downloads and saves Markit CDS data.
+#   It uses RPostgres direct download.
 #
 # Input(s):
 # ---------
-#     WRDS connection
+#   WRDS connection
 #   
 # Output(s) :
 # ----------
-#   SQL tables at sts-liramota.mit.edu:
-#     1. markit.cds2001-markit.cds2023 (23 batches)
+#   Dropbox data/raw/markit:
+#     1. markit.cds2001-markit.cds2026 (26 batches)
 #     2. markit.cdslookup
 #     3. markit.cdxcomps
 #     4. markit.cdxcomps_chars
@@ -39,12 +39,13 @@
 #
 # Date:
 # ------
-#     2022-05-12
-#     update: 2023-11-13
+#   2022-05-12
+#   update: 2026-01-23
 #
 # Author:
 # --------
-#     Lira Mota Mertens, liramota@mit.edu
+#   Lira Mota Mertens, liramota@mit.edu
+#   Ruiquan Chang, chang.2590@osu.edu
 #
 # Additional note(s):
 # -----------------------------
@@ -79,19 +80,23 @@
 # ================================================================= #
 # Environment ####
 # ================================================================= #
-
 # Clear workspace
 rm(list = ls())
 
 # Helper functions
-source("utilities/utilities.R")
+source('utils/setPaths.R')
+source('utils/wrds_credentials.R')
 
 # Create database connections
-print("Connecting to WRDS and SQL Server.")
-wrds <- wrds_con()
-iswindows <- Sys.info()["sysname"] == "Windows"
-db <- db_con("markit", windows_auth = iswindows)
-connectArgs <- bcputility::makeConnectArgs(server = Sys.getenv("mssql_server"), database = "markit")
+creds <- get_wrds_credentials()
+wrds <- dbConnect(Postgres(),
+                  host='wrds-pgdata.wharton.upenn.edu',
+                  port=9737,
+                  user = creds$username,
+                  password = creds$password,
+                  sslmode='require',
+                  dbname='wrds')
+
 
 # ================================================================= #
 # Download and Save Data ####
@@ -113,7 +118,7 @@ N <- length(data)
 # Download all data from Markit
 #-------------------------------------------------------------------#
 for(n in c(1:N)){
-  if(like(data[n],'cds')&data[n]!="cdslookup"){
+  if(like(data[n],'cds') & data[n]!="cdslookup"){
     sql <- sprintf("SELECT redcode,batch, date, tier, ticker, shortname, docclause, sector, region, country, currency,
                             tenor, parspread, convspreard, upfront, cdsrealrecovery, cdsassumedrecovery, compositepricerating,
                             compositedepth5y, compositecurverating, avrating, idxmember, quotescountcurve, 
@@ -128,39 +133,20 @@ for(n in c(1:N)){
     sort_cols = NULL
     }
   print("Downloading from WRDS.") 
-  #May disconnect if upload to SQL takes too long, so reconnect:
-  wrds <- wrds_con() 
   data_n <- dbGetQuery(wrds, sql)
   data_n <- as.data.table(data_n)
   
-  print("Uploading to SQL Server.")
+  print("Uploading to Dropbox.")
   print(paste0("NRows: ", nrow(data_n)))
-  db_write(db, connectArgs, data[n], data_n)
-  
-  if (like(data[n], "cds") & data[n] != "cdslookup"){
-    # Pick couple random portfolios to check
-    rand_dates <- unique(data_n$date) |> sample(size = 1)
-    test_local <-  data_n[date %in% rand_dates]
-    check_db(
-      db,
-      data[n],
-      test_local,
-      sort_cols = sort_cols,
-      subset_cmd = paste0(
-        "SELECT * FROM ",
-        data[n],
-        " WHERE date BETWEEN '",
-        rand_dates, "' AND '", rand_dates, "'"))
-    
-  } else {
-    check_db(db, data[n], data_n, sort_cols = sort_cols)
-  }
+  out_file <- file.path(RAWDIR, "markit", paste0(data[n], ".rds"))
+  saveRDS(data_n, out_file)
   
   print(sprintf('We just downloaded %s.', data[n]))
   rm(data_n)
   gc()
 }
 
-dbDisconnect(db)
 dbDisconnect(wrds)
 print('CDS tables have been downloaded successfully.')
+
+

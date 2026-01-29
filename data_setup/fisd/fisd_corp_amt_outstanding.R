@@ -22,12 +22,13 @@
 # Date:
 # -----
 #   2023-02-07
-#   update: 2026-01-22
+#   update: 2026-01-23
 #
 # Author(s):
 # -------
 #   Lira Mota, liramota@mit.edu
 #   Ruiquan Chang, chang.2590@osu.edu
+#   Ziqi Li, ziqili7@illinois.edu
 #
 # Additional note(s):
 # ----------
@@ -63,16 +64,43 @@ issue_data <- issue_data[!is.na(offering_amt)]
 current <- readRDS(paste0(RAWDIR, "fisd/fisd_amt_out.rds"))
 hist <- readRDS(paste0(RAWDIR, "fisd/fisd_amt_out_hist.rds"))
 
+
+# ================================================================= #
+# Process Historical Outstanding Data ####
+# ================================================================= #
 # append data 
 hist <- rbind(hist, current, fill=TRUE)
 hist[duplicated(hist, by = colnames(current))]
+hist <- hist[order(issue_id, effective_date, transaction_id)]
+
+# check NAs
+hist[is.na(amount_outstanding)&(action_type!="I")]
+
+hist[issue_id==648857]
+hist[issue_id==612831]
+# View(hist[issue_id==201053])
+# View(hist[issue_id==408673])
+# View(hist[issue_id==72329])
+
+# Drop all NAs in amount_outstanding 
+# From the checks above, the NAs resulting from partial bond calls should not be counted
+# For the NAs from the initial offering, we can drop them for now. 
+# Since we're going to combine the issue table later, we won't lose these initial offering obs anyway.
+hist <- hist[!is.na(amount_outstanding)]  # 186 observations
+
+# check neagtive outstanding
+hist[amount_outstanding<0]
+hist[issue_id==1184910]
+
+# Replace negative amount outstanidng with 0
+# The negative outstanding comes from the action amount being greater than the total outstanding (the firm called or repurchased the bonds)
+# So, the date on which the outstanding becomes negative should be treated as the end date of the bond.
+hist <- hist[amount_outstanding < 0, amount_outstanding := 0]  # 22 observations
 
 # Historical Data: we need the issue_id and effective date to be a primary key.
 # Based on the Mergent Fisd documentation, "transaction is a Mergent-generated number unique 
 # to each record, highest number will be the most current".
 # We then select only the last transaction id.
-hist <- hist[is.na(amount_outstanding), amount_outstanding := 0]  # 186 observations
-hist <- hist[amount_outstanding < 0, amount_outstanding := 0]  # 22 observations
 hist <- hist[order(issue_id, effective_date, transaction_id)]
 hist <- unique(hist, by = c('issue_id', 'effective_date'), fromLast = TRUE)
 range(hist[!is.na(effective_date)]$effective_date)  # "1895-10-01" "2025-07-17"
@@ -125,6 +153,8 @@ setkey(amt_hist, issue_id, date)
 # Keep the value in the hist table - it is the most recent one!
 amt_hist <- unique(amt_hist, by = c('issue_id', 'date'))
 
+amt_hist[!is.na(date), range(date)] # "1895-10-01" "2026-09-26"
+
 
 #========================================================================#
 # Build Batches Table ####
@@ -174,8 +204,8 @@ system.time({
 }) # takes ~ 50 minutes
 
 # counters stats 
-length(issues) - sum(counters$num_issues) # 150 issues with no data! 
-sum(counters$num_lines) # Total base has 41 Million lines (43115940)
+length(issues) - sum(counters$num_issues) # 146 issues with no data! 
+sum(counters$num_lines) # Total base has 43 Million lines (43115940)
 
 
 #========================================================================#
@@ -209,4 +239,5 @@ range(final_data$date)  # "1902-03-31" "2122-04-15"
 
 saveRDS(final_data, file = paste0(PROCDIR, 'fisd/corp_amt_outstanding.rds'))
 print('Successfully created final amount outstanding table.')
+
 

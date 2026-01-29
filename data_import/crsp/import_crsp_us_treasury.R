@@ -3,27 +3,28 @@
 # ================================================================= #
 # Description:
 # ------------
-#     This script downloads US Treasury fixed-term rates from CRSP WRDS server.
-#     It uses RPostgres direct download.
+#   This script downloads US Treasury fixed-term rates from CRSP WRDS server.
+#   It uses RPostgres direct download.
 #
 # Input(s):
 # ---------
-#     WRDS connection
+#   WRDS connection
 #
 # Output(s):
 # ----------
-#     CRSP raw data:
-#     Data/raw/CRSP/treasury_fixed_rates/tfz.rds
-#     Data/raw/CRSP/treasury_fixed_rates/ycurve.rds
+#   CRSP raw data:
+#     data/raw/crsp/treasury_rates/tfz.rds, tfz_d.rds
+#     data/raw/crsp/treasury_rates/ycurve.rds, ycurve_d.rds
 #
 # Date:
 # ----------
-#     2022-05-12
-#     update: 2023-11-07
+#   2022-05-12
+#   update: 2026-01-22
 #
 # Author(s):
 # ----------
-#     Lira Mota Mertens, liramota@mit.edu
+#   Lira Mota Mertens, liramota@mit.edu
+#   Ruiquan Chang, chang.2590@osu.edu
 #
 # Additional note(s):
 # ----------
@@ -74,13 +75,14 @@ source('utils/setPaths.R')
 source('utils/wrds_credentials.R')
 
 # Create database connections
+creds <- get_wrds_credentials()
 wrds <- dbConnect(Postgres(),
-                  host = 'wrds-pgdata.wharton.upenn.edu',
-                  port = 9737,
-                  user = 'rqchang99',
-                  password = 'Crq-19990711',
-                  sslmode ='require',
-                  dbname ='wrds')
+                  host='wrds-pgdata.wharton.upenn.edu',
+                  port=9737,
+                  user = creds$username,
+                  password = creds$password,
+                  sslmode='require',
+                  dbname='wrds')
 
 
 #================================================================== #
@@ -92,21 +94,21 @@ wrds <- dbConnect(Postgres(),
 print('Successfully started US Treasury yield curve download.')
 
 # Key Rates
-sql1 <- "select * from crspq.tfz_mth_rf"
+sql1 <- "select * from crsp.tfz_mth_rf"
 res1 <- dbSendQuery(wrds, sql1)
 tfz1 <- as.data.table(dbFetch(res1, n = -1))
 dbClearResult(res1)
 rm(res1)
 
 # Key Rates 2
-sql2 <- "select * from crspq.tfz_mth_ft"
+sql2 <- "select * from crsp.tfz_mth_ft"
 res2 <- dbSendQuery(wrds, sql2)
 tfz2 <- as.data.table(dbFetch(res2, n = -1))
 dbClearResult(res2)
 rm(res2)
 
-tfz1 <- tfz1[,.(date=mcaldt, kytreasnox, tmytm)]
-tfz2 <- tfz2[,.(date=mcaldt, kytreasnox, tmytm)]
+tfz1 <- tfz1[, .(date=mcaldt, kytreasnox, tmytm)]
+tfz2 <- tfz2[, .(date=mcaldt, kytreasnox, tmytm)]
 
 tfz <- rbind(tfz1, tfz2)
 rm(tfz1,tfz2, sql1, sql2)
@@ -126,16 +128,21 @@ tfz[kytreasnox==2000009, term_type := 30]
 # Create mdate
 tfz[,mdate:=year(date)*100+month(date)]
 
-ycurve <- dcast.data.table(tfz[,.(mdate, term_type, tmytm)], 
-                           'mdate~term_type', 
+# Create term type column
+tfz[, term_type_clean := gsub(pattern = "\\.", replacement = "", paste0("term_type_", round(term_type, 2)))]
+
+ycurve <- dcast.data.table(tfz[,.(mdate, term_type_clean, tmytm)], 
+                           'mdate~term_type_clean', 
                            value.var = 'tmytm')
+
+tfz[, term_type_clean := NULL]
 setkey(ycurve, "mdate")
 
 #-----------------------------------------#
 # 2. US Treasury daily
 #-----------------------------------------#
 # Key Rates
-sql <- "select * from crspq.tfz_dly_ft"
+sql <- "select * from crsp.tfz_dly_ft"
 res <- dbSendQuery(wrds, sql)
 tfz_d <- as.data.table(dbFetch(res, n = -1))
 dbClearResult(res)
@@ -151,7 +158,7 @@ tfz_d[kytreasnox==2000007, term_type := '10yr']
 tfz_d[kytreasnox==2000008, term_type := '20yr']
 tfz_d[kytreasnox==2000009, term_type := '30yr']
 
-ycurve_d <- dcast.data.table(tfz_d[,.(date, term_type, tdytm)], 
+ycurve_d <- dcast.data.table(tfz_d[, .(date, term_type, tdytm)], 
                              'date~term_type', 
                              value.var = 'tdytm')
 setkey(ycurve_d, "date")
@@ -161,12 +168,12 @@ setkey(ycurve_d, "date")
 # Write Data ####
 # ================================================================= #
 # UST monthly
-saveRDS(tfz, paste0(RAWDIR, 'CRSP/treasury_fixed_rates/tfz.rds'))
-saveRDS(ycurve, paste0(RAWDIR, 'CRSP/treasury_fixed_rates/ycurve.rds'))
+saveRDS(tfz, paste0(RAWDIR, 'crsp/treasury_rates/tfz.rds'))
+saveRDS(ycurve, paste0(RAWDIR, 'crsp/treasury_rates/ycurve.rds'))
 
 # UST daily
-saveRDS(tfz_d, paste0(RAWDIR, 'CRSP/treasury_fixed_rates/tfz_d.rds'))
-saveRDS(ycurve_d, paste0(RAWDIR, 'CRSP/treasury_fixed_rates/ycurve_d.rds'))
+saveRDS(tfz_d, paste0(RAWDIR, 'crsp/treasury_rates/tfz_d.rds'))
+saveRDS(ycurve_d, paste0(RAWDIR, 'crsp/treasury_rates/ycurve_d.rds'))
 
 dbDisconnect(wrds)
 print('US Treasury yield tables have been downloaded successfully.')
