@@ -17,6 +17,15 @@ if(Sys.info()['sysname']=="Linux"){
            OUTDIR <- "D:/Dropbox/project/fund_contagion/outputs/"
            PLOTSDIR <- "D:/Dropbox/project/fund_contagion/outputs/plots/"
            TABLESDIR <- "D:/Dropbox/project/fund_contagion/outputs/tables/"
+         },
+         "ziqili" = {
+           DATADIR <- "/Users/ziqili/Dropbox (Personal)/projects/fund_contagion/data"
+           RAWDIR <- "/Users/ziqili/Dropbox (Personal)/projects/fund_contagion/data/raw/"
+           TEMPDIR <- "/Users/ziqili/Dropbox (Personal)/projects/fund_contagion/data/temp/"
+           PROCDIR <- "/Users/ziqili/Dropbox (Personal)/projects/fund_contagion/data/processed/"
+           OUTDIR <- "/Users/ziqili/Dropbox (Personal)/projects/fund_contagion/outputs/"
+           PLOTSDIR <- "/Users/ziqili/Dropbox (Personal)/projects/fund_contagion/outputs/plots/"
+           TABLESDIR <- "/Users/ziqili/Dropbox (Personal)/projects/fund_contagion/outputs/tables/"
          }
          )
 }
