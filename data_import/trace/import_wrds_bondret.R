@@ -20,12 +20,12 @@
 #   update: 2026/01/22
 #
 # Author(s):
-# --------- -
+# ------------
 #   Lira Mota Mertens, liramota@mit.edu
 #   Ruiquan Chang, chang.2590@osu.edu
 #
 # Additional note(s):
-# ----------
+# ------------
 #     
 # ================================================================= #
 
@@ -44,14 +44,17 @@ library(lubridate)
 
 # Source helper scripts
 source('utils/setPaths.R')
+source('utils/wrds_credentials.R')
 
 # Create database connections
+creds <- get_wrds_credentials()
 wrds <- dbConnect(Postgres(),
-                  host = 'wrds-pgdata.wharton.upenn.edu',
-                  port = 9737,
-                  user = 'rqchang99',
-                  password = 'Crq-19990711',
-                  sslmode ='require',
+                  host='wrds-pgdata.wharton.upenn.edu',
+                  port=9737,
+                  user = creds$username,
+                  password = creds$password,
+                  sslmode='require',
+                  dbname='wrds')
                   dbname ='wrds')
 
 
