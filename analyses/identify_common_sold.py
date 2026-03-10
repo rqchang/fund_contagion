@@ -4,6 +4,8 @@ import numpy as np
 import os
 import sys
 import matplotlib.pyplot as plt
+import pyarrow
+import fastparquet
 
 try:
     _root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -26,7 +28,7 @@ print("date_m_id range:", crsp["date_m_id"].min(), "-", crsp["date_m_id"].max())
 """ Identify commonly sold bonds """
 " Step 1: Compute change in paramt to identify sales "
 # Subset to post-2007Q3 (paramt not reliable before 200710)
-crsp = crsp[(crsp["date_m_id"] >= 200710)]
+crsp = crsp[(crsp["date_m_id"] >= 200710)].reset_index(drop=True)
 crsp = crsp.sort_values(["crsp_portno", "cusip8", "date_m_id"]).reset_index(drop=True)
 print(f"After subsetting to [200710, 202409): {crsp.shape}")
 
@@ -62,8 +64,8 @@ print("\nSale observations:", crsp["is_sale"].sum(),
 # Sale observations: 14007699 (34.8% of fund-bond-months with valid lag)
 
 # drop unused columns
-crsp.drop(columns=["share_corporate", "date_m_id_lag", "paramt_lag", "prev_date_m_id", "w", "price_eom", "mkt_cap", "amt_outstanding"],
-          inplace=True, errors="ignore")
+drop_col = ["share_corporate", "paramt_lag", "price_eom", "mkt_cap"]
+crsp.drop(columns=drop_col, inplace=True, errors="ignore")
 
 
 " Step 2: Classify funds as outflow vs non-outflow "
@@ -180,7 +182,7 @@ print(cat_counts)
 
 # Time series of bond counts by category, aggregated to quarterly
 CAT_ORDER  = ["fire_sold", "common_sold", "other"]
-CAT_LABELS = ["Fire-sold", "Commonly sold", "Other"]
+CAT_LABELS = ["Fire-sold", "Common-sold", "Other"]
 CAT_COLORS = ["firebrick", "darkorange", "grey"]
 
 bond_month_stats["date"] = pd.to_datetime(bond_month_stats["date_m_id"].astype(str), format="%Y%m")
@@ -211,9 +213,13 @@ data = pd.merge(
                        "H_out", "S_out", "H_in", "S_in"]],
     on=["cusip8", "date_m_id"], how="left"
 )
+print("After merging bond month stats:", data.shape)
 
 data["is_buy"] = (data["delta_paramt"] > 0) & data["delta_paramt"].notna()
+data["is_fire_sale"] = data["is_sale"] & (data["bond_cat"] == "fire_sold")
+data["is_common_sale"] = data["is_sale"] & (data["bond_cat"] == "common_sold")
 data["is_trade"] = data["is_sale"] | data["is_buy"]
+data["fund_group"] = data["outflow_fund"].map({True: "Outflow", False: "Inflow"})
 
 # Suppose 10 outflow funds and 10 inflow funds hold a bond
 # 2 outflow funds sell → share_out = 20% 
@@ -234,7 +240,9 @@ funds_on_common = (
         n_buy_common=("is_buy", "sum"),
         outflow_fund=("outflow_fund", "first"),
         flow=("flow", "first"),
-        aum=("aum", "first")
+        aum=("aum", "first"),
+        ret=("mret", "first"),
+        totparamt=("totparamt", "first")
     )
     .reset_index()
 )
@@ -251,11 +259,208 @@ funds_on_common["date"] = pd.to_datetime(funds_on_common["date_m_id"].astype(str
 funds_on_common["group"] = funds_on_common["outflow_fund"].map({True: "Outflow", False: "Inflow"})
 print(funds_on_common["outflow_fund"].value_counts())
 
+# Total bonds sold / traded per fund-month (across all bond categories)
+fund_totals = (
+    data.groupby(["crsp_portno", "date_m_id"])
+    .agg(n_total_sold=("is_sale", "sum"), n_total_traded=("is_trade", "sum"),
+         n_sale_fire=("_is_fire_sale", "sum"))
+    .reset_index()
+)
+funds_on_common = pd.merge(funds_on_common, fund_totals, on=["crsp_portno", "date_m_id"], how="left")
+
+# Normalised shares
+funds_on_common["share_common_of_sold"]   = funds_on_common["n_sale_common"] / funds_on_common["n_total_sold"].replace(0, np.nan)
+funds_on_common["share_common_of_traded"] = funds_on_common["n_common_sold_bonds"] / funds_on_common["n_total_traded"].replace(0, np.nan)
+funds_on_common["share_fire_sold"]        = funds_on_common["n_sale_fire"] / funds_on_common["n_total_sold"].replace(0, np.nan)
+funds_on_common["net_trade"]        = funds_on_common["n_buy_common"] - funds_on_common["n_sale_common"]
+funds_on_common["net_trade_scaled"] = funds_on_common["net_trade"] / funds_on_common["n_common_sold_bonds"]
+funds_on_common["sell_ratio"] = funds_on_common["n_sale_common"] / funds_on_common["n_common_sold_bonds"]
+
+
+""" Plots: bond_month_stats """
+" KDE/histogram of share_out vs share_in "
+# Outflow funds are the primary sellers, inflow selling is weaker
+N_BINS = 10
+BIN_EDGES  = np.linspace(0, 1, N_BINS + 1)
+BIN_EDGES[-1] = 1.001
+BIN_LABELS = [f"[{BIN_EDGES[i]:.1f}, {BIN_EDGES[i+1]:.1f})" for i in range(N_BINS)]
+
+bms_plot = bond_month_stats[["share_out", "share_in"]].dropna()
+out_pct = pd.cut(bms_plot["share_out"], bins=BIN_EDGES, labels=BIN_LABELS, right=False).value_counts(normalize=True).reindex(BIN_LABELS) * 100
+in_pct  = pd.cut(bms_plot["share_in"],  bins=BIN_EDGES, labels=BIN_LABELS, right=False).value_counts(normalize=True).reindex(BIN_LABELS) * 100
+
+x = np.arange(N_BINS)
+w = 0.35
+fig, ax = plt.subplots(figsize=(11, 4))
+ax.bar(x - w/2, out_pct, width=w, color="firebrick", alpha=0.75, label=r"$Share^{out}$")
+ax.bar(x + w/2, in_pct,  width=w, color="steelblue", alpha=0.75, label=r"$Share^{in}$")
+ax.set_xticks(x)
+ax.set_xticklabels(BIN_LABELS, rotation=45, ha="right")
+ax.set_xlabel("Fraction of holding funds that sold the bond")
+ax.set_ylabel("% of bond-months")
+ax.legend(fontsize=9)
+fig.tight_layout()
+fig.savefig(os.path.join(OUT_DIR, "plots/hist_share_out_vs_in.pdf"), bbox_inches="tight")
+plt.show()
+
+
+" Scatter: share_out vs share_in, colored by bond_cat "
+CAT_COLOR_MAP = {
+    "other": "lightgrey",
+    "fire_sold": "firebrick",
+    "common_sold": "steelblue"
+}
+
+SCAT_CLIP = 1
+scat = bond_month_stats[["share_out", "share_in", "bond_cat", "q_out", "q_in"]].copy()
+scat["share_out"] = scat["share_out"].clip(upper=SCAT_CLIP)
+scat["share_in"]  = scat["share_in"].clip(upper=SCAT_CLIP)
+scat = scat.dropna(subset=["share_out", "share_in"])
+
+fig, ax = plt.subplots(figsize=(7, 6))
+for cat in ["other", "fire_sold", "common_sold"]:
+    mask = scat["bond_cat"] == cat
+    ax.scatter(
+        scat.loc[mask, "share_out"],
+        scat.loc[mask, "share_in"],
+        s=3, alpha=0.25,
+        color=CAT_COLOR_MAP[cat],
+        label=cat.replace("_", " ").title(),
+        rasterized=True
+    )
+
+mean_q_out = scat["q_out"].mean()
+mean_q_in  = scat["q_in"].mean()
+
+ax.axvline(mean_q_out, color="firebrick", linewidth=2, linestyle="--",
+           label=fr"mean $q^{{out}}_{{75,t}}$ = {mean_q_out:.2f}")
+ax.axhline(mean_q_in, color="steelblue", linewidth=2, linestyle="--",
+           label=fr"mean $q^{{in}}_{{50,t}}$ = {mean_q_in:.2f}")
+
+ax.set_xlabel(r"$Share^{out}$")
+ax.set_ylabel(r"$Share^{in}$")
+#ax.set_title("Selling share by bond-month")
+ax.legend(fontsize=8, markerscale=4)
+fig.tight_layout()
+fig.savefig(os.path.join(OUT_DIR, "plots/scatter_selling_share.pdf"), bbox_inches="tight")
+plt.show()
+
+
+" Time series of category shares "
+# #fire_sold/#bonds, #common_sold/#bonds
+cat_share_ts = (
+    bond_month_stats[bond_month_stats["date_m_id"] <= PLOT_END]
+    .groupby("date")["bond_cat"]
+    .value_counts(normalize=True)
+    .unstack(fill_value=0)
+    .resample("ME").mean()
+)
+
+fig, ax = plt.subplots(figsize=(12, 4))
+add_recessions(ax)
+for cat, color, label in [("fire_sold",   "firebrick",   "Fire-sold"),
+                           ("common_sold", "darkorange",  "Common-sold")]:
+    if cat in cat_share_ts.columns:
+        ax.plot(cat_share_ts.index, cat_share_ts[cat] * 100, color=color, label=label)
+
+ax.set_xlabel("Month")
+ax.set_ylabel("Share of bond-months (%)")
+#ax.set_title("Monthly fraction of fire-sold and commonly sold bonds")
+ax.legend(fontsize=9)
+fig.tight_layout()
+fig.savefig(os.path.join(OUT_DIR, "plots/ts_cat_shares.pdf"), bbox_inches="tight")
+plt.show()
+
+
+" Distribution of H_out and H_in by bond_cat (box plots) "
+CAT_ORDER_ALL = ["other", "fire_sold", "common_sold"]
+CAT_LABEL_ALL = ["Others", "Fire-sold", "Common-sold"]
+n_cats = len(CAT_ORDER_ALL)
+
+fig, ax = plt.subplots(figsize=(8, 5))
+for offset, col, color, label in zip(
+        [-0.2, 0.2],
+        ["H_out", "H_in"],
+        ["firebrick", "steelblue"],
+        [r"$H^{out}$ (outflow funds)", r"$H^{in}$ (inflow funds)"]):
+    positions = np.arange(n_cats) + offset
+    data = [bond_month_stats.loc[bond_month_stats["bond_cat"] == cat, col]
+            for cat in CAT_ORDER_ALL]
+    bp = ax.boxplot(data, positions=positions, widths=0.35,
+                    showfliers=False, patch_artist=True)
+    for patch in bp["boxes"]:
+        patch.set_facecolor(color)
+        patch.set_alpha(0.6)
+    for element in ["medians", "whiskers", "caps"]:
+        for line in bp[element]:
+            line.set_color(color)
+    bp["boxes"][0].set_label(label)
+    for pos, d in zip(positions, data):
+        med = d.median()
+        ax.text(pos, med, f"{med:.0f}", ha="center", va="bottom", fontsize=10, color=color)
+
+ax.set_xticks(np.arange(n_cats))
+ax.set_xticklabels(CAT_LABEL_ALL)
+ax.set_ylabel("Number of funds holding bond")
+#ax.set_title("Distribution of outflow vs inflow fund counts by bond category")
+ax.legend(fontsize=9)
+fig.tight_layout()
+fig.savefig(os.path.join(OUT_DIR, "plots/num_funds_by_cat.pdf"), bbox_inches="tight")
+plt.show()
+
+
+" Time series of thresholds q_out and q_in "
+threshold_ts = (
+    bond_month_stats[bond_month_stats["date_m_id"] <= PLOT_END]
+    .groupby("date")[["q_out", "q_in"]]
+    .mean()
+    .resample("QE").mean()
+)
+
+fig, ax = plt.subplots(figsize=(12, 4))
+add_recessions(ax)
+ax.plot(threshold_ts.index, threshold_ts["q_out"], color="firebrick",  label=r"$q^{out}_{75,t}$")
+ax.plot(threshold_ts.index, threshold_ts["q_in"],  color="steelblue",  label=r"$q^{in}_{75,t}$")
+ax.set_xlabel("Quarter")
+ax.set_ylabel("Share threshold (p75)")
+ax.set_title("(d) Monthly p75 classification thresholds for outflow and inflow selling shares")
+ax.legend(fontsize=9)
+fig.tight_layout()
+#fig.savefig(os.path.join(OUT_DIR, "plots/ts_thresholds_q75.pdf"), bbox_inches="tight")
+plt.show()
+
+
+" Mean selling intensity by bond category over time "
+intensity_ts = (
+    bond_month_stats[bond_month_stats["date_m_id"] <= PLOT_END]
+    .groupby(["date", "bond_cat"])[["share_out", "share_in"]]
+    .mean()
+    .unstack("bond_cat")
+    .resample("QE").mean()
+)
+
+fig, axes = plt.subplots(2, 1, figsize=(12, 7), sharex=True)
+for ax, share, label in zip(axes,
+                             ["share_out", "share_in"],
+                             [r"Average $Share^{out}$", r"Average $Share^{in}$"]):
+    add_recessions(ax)
+    for cat, color in [("fire_sold", "firebrick"), ("common_sold", "darkorange"), ("other", "grey")]:
+        col = (share, cat)
+        if col in intensity_ts.columns:
+            ax.plot(intensity_ts.index, intensity_ts[col], color=color,
+                    label=cat.replace("_", " ").title())
+    ax.set_ylabel(label)
+    ax.legend(fontsize=8)
+
+axes[1].set_xlabel("Quarter")
+#fig.suptitle("(e) Mean selling intensity within bond categories")
+fig.tight_layout()
+fig.savefig(os.path.join(OUT_DIR, "plots/ts_selling_by_cat.pdf"), bbox_inches="tight")
+plt.show()
+
 
 """ Plots: funds_on_common """
-# ------------------------------------------------------------------ #
-# (a) Time series of n_common_sold_bonds distribution by fund type  #
-# ------------------------------------------------------------------ #
+" n_common_sold_bonds by fund type "
 quantiles = {"p25": 0.25, "p50": 0.50, "p75": 0.75}
 
 fig, ax = plt.subplots(figsize=(12, 4))
@@ -263,82 +468,168 @@ for grp, color in [("Outflow", "firebrick"), ("Inflow", "steelblue")]:
     sub = (
         funds_on_common[
             (funds_on_common["group"] == grp) &
-            (funds_on_common["date_m_id"] <= 202403)
+            (funds_on_common["date_m_id"] <= PLOT_END)
         ]
-        .groupby("date")["n_common_sold_bonds"]
+        .groupby("date")["share_common_of_sold"]
         .quantile(list(quantiles.values()))
         .unstack()
     )
     sub.columns = list(quantiles.keys())
     sub_q = sub.resample("QE").mean()
-
-    ax.plot(sub_q.index, sub_q["p50"], color=color, label=f"{grp} (median)")
+    ax.plot(sub_q.index, sub_q["p50"], color=color, label=f"{grp} fund (median)")
     ax.fill_between(sub_q.index, sub_q["p25"], sub_q["p75"],
-                    alpha=0.25, color=color, label=f"{grp} IQR")
+                    alpha=0.25, color=color, label=f"{grp} fund IQR")
 
 add_recessions(ax)
 ax.set_xlabel("Quarter")
-ax.set_ylabel("n_common_sold_bonds")
-ax.set_title("(a) Distribution of commonly sold bonds traded per fund-month, by fund type")
+ax.set_ylabel("% Common-sold bonds among all bonds sold")
 ax.legend(fontsize=8)
 fig.tight_layout()
-#fig.savefig(os.path.join(OUT_DIR, "plots/ts_dist_n_common_sold_bonds.pdf"), bbox_inches="tight")
+fig.savefig(os.path.join(OUT_DIR, "plots/ts_share_common_by_type.pdf"), bbox_inches="tight")
 plt.show()
 
 
-# ------------------------------------------------------------------ #
-# (b) Time series: share of outflow funds among common-sold traders  #
-# ------------------------------------------------------------------ #
-trader_ts = (
-    funds_on_common[funds_on_common["date_m_id"] <= 202403]
-    .groupby("date")["outflow_fund"]
-    .agg(n_outflow="sum", n_total="count")
-    .resample("QE").sum()    # sum counts within quarter, then divide
-)
-trader_ts["share_outflow"] = trader_ts["n_outflow"] / trader_ts["n_total"]
+" Sell ratio by fund type "
+fig, ax = plt.subplots(figsize=(12, 4))
+for grp, color in [("Outflow", "firebrick"), ("Inflow", "steelblue")]:
+    sub = (
+        funds_on_common[
+            (funds_on_common["group"] == grp) &
+            (funds_on_common["date_m_id"] <= 202403)
+        ]
+        .groupby("date")["sell_ratio"]
+        .quantile([0.25, 0.50, 0.75])
+        .unstack()
+    )
+    sub.columns = ["p25", "p50", "p75"]
+    sub_q = sub.resample("QE").mean()
+    ax.plot(sub_q.index, sub_q["p50"], color=color, label=f"{grp} fund (median)")
+    ax.fill_between(sub_q.index, sub_q["p25"], sub_q["p75"], alpha=0.25, color=color, label=f"{grp} fund IQR")
 
+add_recessions(ax)
+ax.set_xlabel("Quarter")
+ax.set_ylabel("Sell ratio")
+#ax.set_title("Sell ratio on commonly sold bonds by fund type")
+ax.legend(fontsize=8)
+fig.tight_layout()
+fig.savefig(os.path.join(OUT_DIR, "plots/ts_sell_ratio_by_type.pdf"), bbox_inches="tight")
+plt.show()
+
+
+" Net trading on commonly sold bonds by fund type "
 fig, ax = plt.subplots(figsize=(12, 4))
 add_recessions(ax)
-ax.plot(trader_ts.index, trader_ts["share_outflow"], color="firebrick")
-ax.axhline(0.5, color="black", linewidth=0.8, linestyle="--")
+for grp, color in [("Outflow", "firebrick"), ("Inflow", "steelblue")]:
+    sub = (
+        funds_on_common[
+            (funds_on_common["group"] == grp) &
+            (funds_on_common["date_m_id"] <= PLOT_END)
+        ]
+        .groupby("date")["net_trade"]
+        .quantile([0.25, 0.50, 0.75])
+        .unstack()
+        .resample("QE").mean()
+    )
+    sub.columns = ["p25", "p50", "p75"]
+    ax.plot(sub.index, sub["p50"], color=color, label=f"{grp} fund (median)")
+    ax.fill_between(sub.index, sub["p25"], sub["p75"],
+                    alpha=0.25, color=color, label=f"{grp} fund IQR")
+
+ax.axhline(0, color="black", linewidth=0.8, linestyle="--")
 ax.set_xlabel("Quarter")
-ax.set_ylabel("Share of outflow funds")
-ax.set_title("(b) Share of outflow funds among funds trading commonly sold bonds")
+ax.set_ylabel("Net trade (buys − sells) on common-sold bonds")
+ax.legend(fontsize=9)
 fig.tight_layout()
-#fig.savefig(os.path.join(OUT_DIR, "plots/ts_share_outflow_common_q.pdf"), bbox_inches="tight")
+fig.savefig(os.path.join(OUT_DIR, "plots/ts_net_trade_by_type.pdf"), bbox_inches="tight")
 plt.show()
 
-# ------------------------------------------------------------------ #
-# (c) Box plot: n_sale_common distribution by flow group             #
-# ------------------------------------------------------------------ #
-fig, ax = plt.subplots(figsize=(6, 4))
-groups = [
-    funds_on_common.loc[funds_on_common["group"] == g, "n_sale_common"].clip(upper=20)
-    for g in ["Outflow", "Inflow"]
+
+" Binscatter plots: fund flow vs common sales "
+N_BINS_BS = 20
+Y_COLS = ["share_common_of_sold", "n_sale_common", "n_buy_common", "net_trade_scaled"]
+
+sub = (
+    funds_on_common[["crsp_portno", "date_m_id", "flow"] + Y_COLS]
+    .dropna()
+    .reset_index(drop=True)
+    .copy()
+)
+
+# Winsorize flow before residualizing
+flow_p1 = sub["flow"].quantile(0.01)
+flow_p99 = sub["flow"].quantile(0.99)
+sub["flow"] = sub["flow"].clip(flow_p1, flow_p99)
+
+# Two-way FE residuals via iterative double-demeaning (fund + time)
+def demean_twoway(df, var, fund_col="crsp_portno", time_col="date_m_id",
+                  tol=1e-8, max_iter=200):
+    v = df[var].astype(float).copy()
+
+    for _ in range(max_iter):
+        v_old = v.copy()
+        v = v - v.groupby(df[fund_col]).transform("mean")
+        v = v - v.groupby(df[time_col]).transform("mean")
+        if (v - v_old).abs().max() < tol:
+            break
+
+    return v - v.mean()
+
+for col in ["flow"] + Y_COLS:
+    sub[f"{col}_resid"] = demean_twoway(sub, col)
+
+# Quantile bins on residualized flow
+sub["bin"] = pd.qcut(sub["flow_resid"], q=N_BINS_BS, duplicates="drop")
+
+bs = (
+    sub.groupby("bin", observed=True)
+    .agg(
+        x=("flow_resid", "mean"),
+        y_share=("share_common_of_sold_resid", "mean"),
+        y_sale=("n_sale_common_resid", "mean"),
+        y_buy=("n_buy_common_resid", "mean"),
+        y_net=("net_trade_scaled_resid", "mean"),
+        n=("flow_resid", "size"),
+    )
+    .dropna()
+    .sort_values("x")
+)
+
+fig, axes = plt.subplots(2, 2, figsize=(14, 8))
+
+plot_specs = [
+    ("y_share", "Share of common-sold bonds among all bonds sold", "(a) Share of common-sold bonds (fund + time FE)"),
+    ("y_sale",  "Count of common-sold bonds sold",                 "(b) # bonds sold (fund + time FE)"),
+    ("y_buy",   "Count of common-sold bonds bought",               "(c) # bonds bought (fund + time FE)"),
+    ("y_net",   "Scaled net trade on common-sold bonds",           "(d) Scaled net trade (fund + time FE)"),
 ]
-ax.boxplot(groups, labels=["Outflow", "Inflow"], showfliers=False)
-ax.set_ylabel("# commonly sold bonds sold (clipped at 20)")
-ax.set_title("(c) Distribution of commonly sold bond sales per fund-month")
+
+for ax, (y_col, ylabel, title) in zip(axes.flat, plot_specs):
+    x_vals = bs["x"].values
+    y_vals = bs[y_col].values
+    ax.scatter(x_vals, y_vals, color="steelblue", s=20, zorder=3)
+    coef = np.polyfit(x_vals, y_vals, deg=1)
+    x_fit = np.linspace(x_vals.min(), x_vals.max(), 200)
+    ax.plot(x_fit, np.polyval(coef, x_fit), color="firebrick", linewidth=1.5)
+    ax.axvline(0, color="black", linewidth=0.8, linestyle="--")
+    ax.axhline(0, color="black", linewidth=0.8, linestyle=":")
+    ax.set_xlabel("Fund flow")
+    ax.set_ylabel(ylabel)
+    ax.set_title(title)
+
+#fig.suptitle(f"Binscatter ({len(bs)} bins), fund + time FE partialled out")
 fig.tight_layout()
-#fig.savefig(os.path.join(OUT_DIR, "plots/box_sale_common.pdf"), bbox_inches="tight")
+fig.savefig(os.path.join(OUT_DIR, "plots/binscatter_flow_nsale.pdf"), bbox_inches="tight", dpi=150)
 plt.show()
 
-print("Saved plots for funds_on_common.")
 
+""" Save outputs """ 
+" Full panel with bond_cat and trade flags "
+drop_col = ["share_out", "share_in", "H_out", "S_out", "H_in", "S_in"]
+data.drop(columns=drop_col, inplace=True, errors="ignore")
+data.to_csv(os.path.join(PROC_DIR, "crsp/mf_holdings_bond_cat.csv"), index=False)
 
-# ================================================================= #
-# Save outputs                                                       #
-# ================================================================= #
-os.makedirs(os.path.join(PROC_DIR, "analyses"), exist_ok=True)
+" Bond-month level statistics and classification "
+bond_month_stats.to_csv(os.path.join(PROC_DIR, "crsp/bond_cat_bm.csv"), index=False)
 
-# 1. Full panel with bond_cat and trade flags
-crsp.to_parquet(os.path.join(PROC_DIR, "analyses/mf_holdings_bond_cat.parquet"), index=False)
-print("\nSaved mf_holdings_bond_cat.parquet")
-
-# 2. Bond-month level statistics and classification
-bond_month_stats.to_parquet(os.path.join(PROC_DIR, "analyses/bond_month_stats.parquet"), index=False)
-print("Saved bond_month_stats.parquet")
-
-# 3. Funds trading on commonly sold bonds
-funds_on_common.to_parquet(os.path.join(PROC_DIR, "analyses/funds_on_common_sold.parquet"), index=False)
-print("Saved funds_on_common_sold.parquet")
+" Fundmonth tradings on commonly sold bonds "
+funds_on_common.to_csv(os.path.join(PROC_DIR, "crsp/funds_sold_fm.csv"), index=False)
