@@ -2,12 +2,17 @@ import pandas as pd
 import pyreadr
 import numpy as np
 import os
+import sys
 import matplotlib.pyplot as plt
 
-PROC_DIR = r"D:\Dropbox\project\fund_contagion\data\processed"
-RAW_DIR  = r"D:\Dropbox\project\fund_contagion\data\raw"
-OUT_DIR  = r"D:\Dropbox\project\fund_contagion\outputs"
-TEMP_DIR = r"D:\Dropbox\project\fund_contagion\data\temp"
+try:
+    _root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+except NameError:
+    _root = os.path.abspath(os.path.join(os.getcwd(), ".."))
+sys.path.insert(0, _root)
+from utils.set_path import PROC_DIR, RAW_DIR, OUT_DIR, TEMP_DIR
+
+PLOT_END = 202403   # last month to include in plots
 
 
 """ Read in data"""
@@ -20,8 +25,10 @@ print("date_m_id range:", crsp["date_m_id"].min(), "-", crsp["date_m_id"].max())
 
 """ Identify commonly sold bonds """
 " Step 1: Compute change in paramt to identify sales "
-# Sort by fund, bond, time to enable lag computation
+# Subset to post-2007Q3 (paramt not reliable before 200710)
+crsp = crsp[(crsp["date_m_id"] >= 200710)]
 crsp = crsp.sort_values(["crsp_portno", "cusip8", "date_m_id"]).reset_index(drop=True)
+print(f"After subsetting to [200710, 202409): {crsp.shape}")
 
 # Lagged paramt within each fund-bond pair
 crsp["paramt_lag"] = crsp.groupby(["crsp_portno", "cusip8"])["paramt"].shift(1)
@@ -47,23 +54,16 @@ crsp["paramt_lag"] = np.where(
 crsp["delta_paramt"] = crsp["paramt"] - crsp["paramt_lag"]
 print(crsp['delta_paramt'].describe())
 
-d = crsp["delta_paramt"].dropna()
-p1, p99 = d.quantile(0.01), d.quantile(0.99)
-fig, ax = plt.subplots(figsize=(8, 4))
-ax.hist(d.clip(p1, p99), bins=100, edgecolor="none", color="steelblue")
-ax.axvline(0, color="red", linewidth=1, linestyle="--")
-fig.tight_layout()
-plt.show()
-
 # A fund-bond-month is a "sale" if paramt declined vs last month
 crsp["is_sale"] = (crsp["delta_paramt"] < 0) & crsp["delta_paramt"].notna()
 print(crsp["is_sale"].value_counts())
 print("\nSale observations:", crsp["is_sale"].sum(),
       f"({crsp['is_sale'].mean()*100:.1f}% of fund-bond-months with valid lag)")
+# Sale observations: 14007699 (34.8% of fund-bond-months with valid lag)
 
-# Subset to post-2007Q3 (paramt not reliable before 200710); drop 2024-09 (incomplete)
-crsp = crsp[(crsp["date_m_id"] >= 200710) & (crsp["date_m_id"] < 202409)].reset_index(drop=True)
-print(f"After subsetting to [200710, 202409): {crsp.shape}")
+# drop unused columns
+crsp.drop(columns=["share_corporate", "date_m_id_lag", "paramt_lag", "prev_date_m_id", "w", "price_eom", "mkt_cap", "amt_outstanding"],
+          inplace=True, errors="ignore")
 
 
 " Step 2: Classify funds as outflow vs non-outflow "
@@ -78,7 +78,7 @@ flow_ts = (
     .agg(n_outflow="sum", n_total="count")
     .reset_index()
 )
-flow_ts = flow_ts[flow_ts['date_m_id']<=202403]
+flow_ts = flow_ts[flow_ts['date_m_id']<= PLOT_END]
 flow_ts["n_inflow"] = flow_ts["n_total"] - flow_ts["n_outflow"]
 flow_ts["date"] = pd.to_datetime(flow_ts["date_m_id"].astype(str), format="%Y%m")
 flow_q = flow_ts.set_index("date").resample("QE")[["n_outflow", "n_inflow"]].mean()
@@ -91,7 +91,7 @@ sell_ts = (
     .reset_index()
 )
 sell_ts["n_inflow_sell"] = sell_ts["n_total_sell"] - sell_ts["n_outflow_sell"]
-sell_ts = sell_ts[sell_ts['date_m_id']<=202403]
+sell_ts = sell_ts[sell_ts['date_m_id']<= PLOT_END]
 sell_ts["date"] = pd.to_datetime(sell_ts["date_m_id"].astype(str), format="%Y%m")
 sell_q = sell_ts.set_index("date").resample("QE")[["n_outflow_sell", "n_inflow_sell"]].mean()
 
@@ -130,13 +130,9 @@ plt.show()
 
 
 " Step 3: Identify commonly sold bonds "
-# For each bond-month, compute H and S for outflow and inflow funds separately.
-# H^out_{i,t}: # outflow funds holding bond i in month t
-# S^out_{i,t}: # outflow funds selling bond i in month t
-# H^in_{i,t}:  # inflow funds holding bond i in month t
-# S^in_{i,t}:  # inflow funds selling bond i in month t
-PERCENTILE   = 75   # baseline p
-MIN_SELLERS  = 2
+# Baseline: (p, r) = (75, 75) for outflow funds; (p', r') = (50, 50) for inflow funds
+P_OUT, R_OUT = 75, 75
+P_IN,  R_IN  = 50, 50
 
 crsp["_inflow_fund"] = ~crsp["outflow_fund"]
 crsp["_s_out"] = crsp["outflow_fund"] & crsp["is_sale"]
@@ -153,28 +149,29 @@ crsp.drop(columns=["_inflow_fund", "_s_out", "_s_in"], inplace=True)
 bond_month_stats["share_out"] = bond_month_stats["S_out"] / bond_month_stats["H_out"]
 bond_month_stats["share_in"]  = bond_month_stats["S_in"]  / bond_month_stats["H_in"]
 
-# Compute cross-sectional pth percentile of share_out and share_in within each month
-p = PERCENTILE / 100
-bond_month_stats["q_out"] = (
-    bond_month_stats.groupby("date_m_id")["share_out"]
-    .transform(lambda x: x.quantile(p))
-)
-bond_month_stats["q_in"] = (
-    bond_month_stats.groupby("date_m_id")["share_in"]
-    .transform(lambda x: x.quantile(p))
-)
+# Distribution-based thresholds within each month:
+#   q^g_{p,t}  = p-th percentile of Share^g_{i,t} across bonds i in month t
+#   c^g_{r,t}  = r-th percentile of S^g_{i,t}     across bonds i in month t
+def _monthly_pctile(df, col, pct, new_col):
+    df[new_col] = df.groupby("date_m_id")[col].transform(lambda x: x.quantile(pct / 100))
 
-# Classify into mutually exclusive categories
-active_out = bond_month_stats["share_out"].ge(bond_month_stats["q_out"]) & bond_month_stats["S_out"].ge(MIN_SELLERS)
-active_in  = bond_month_stats["share_in"].ge(bond_month_stats["q_in"])   & bond_month_stats["S_in"].ge(MIN_SELLERS)
+_monthly_pctile(bond_month_stats, "share_out", P_OUT, "q_out")
+_monthly_pctile(bond_month_stats, "S_out",     R_OUT, "c_out")
+_monthly_pctile(bond_month_stats, "share_in",  P_IN,  "q_in")
+_monthly_pctile(bond_month_stats, "S_in",      R_IN,  "c_in")
 
-conds = [
-    active_out & ~active_in,
-    active_out &  active_in,
-    ~active_out & active_in,
-]
-labels = ["fire_sold", "common_sold", "inflow_only"]
-bond_month_stats["bond_cat"] = np.select(conds, labels, default="no_selling")
+# OutflowSell_{i,t} = 1 if share_out >= q_out AND S_out >= c_out
+# InflowPart_{i,t}  = 1 if share_in  >= q_in  AND S_in  >= c_in
+outflow_sell = (bond_month_stats["share_out"] >= bond_month_stats["q_out"]) & \
+               (bond_month_stats["S_out"]     >= bond_month_stats["c_out"])
+inflow_part  = (bond_month_stats["share_in"]  >= bond_month_stats["q_in"])  & \
+               (bond_month_stats["S_in"]      >= bond_month_stats["c_in"])
+
+bond_month_stats["bond_cat"] = np.select(
+    [outflow_sell & ~inflow_part, outflow_sell & inflow_part],
+    ["fire_sold",                 "common_sold"],
+    default="other"
+)
 
 # Summary
 cat_counts = bond_month_stats["bond_cat"].value_counts()
@@ -182,13 +179,13 @@ total_bm   = len(bond_month_stats)
 print(cat_counts)
 
 # Time series of bond counts by category, aggregated to quarterly
-CAT_ORDER  = ["fire_sold", "common_sold", "inflow_only", "no_selling"]
-CAT_LABELS = ["Fire-sold", "Commonly sold", "Inflow-only selling", "No selling"]
-CAT_COLORS = ["firebrick", "darkorange", "steelblue", "grey"]
+CAT_ORDER  = ["fire_sold", "common_sold", "other"]
+CAT_LABELS = ["Fire-sold", "Commonly sold", "Other"]
+CAT_COLORS = ["firebrick", "darkorange", "grey"]
 
 bond_month_stats["date"] = pd.to_datetime(bond_month_stats["date_m_id"].astype(str), format="%Y%m")
 cat_ts = (
-    bond_month_stats[bond_month_stats['date_m_id']<=202403].groupby(["date", "bond_cat"])
+    bond_month_stats[bond_month_stats['date_m_id']<= PLOT_END].groupby(["date", "bond_cat"])
     .size()
     .unstack(fill_value=0)
     .reindex(columns=CAT_ORDER, fill_value=0)
@@ -209,7 +206,7 @@ plt.show()
 
 " Step 4: Funds trading on commonly sold bonds "
 data = pd.merge(
-    crsp.copy(),
+    crsp,
     bond_month_stats[["cusip8", "date_m_id", "bond_cat", "share_out", "share_in",
                        "H_out", "S_out", "H_in", "S_in"]],
     on=["cusip8", "date_m_id"], how="left"
@@ -249,6 +246,7 @@ print(f"\nCheck n_sale_common + n_buy_common == n_common_sold_bonds: "
       f"{mismatches} mismatches out of {len(funds_on_common):,} rows")
 funds_on_common.drop(columns="_check", inplace=True)
 
+# add fund group
 funds_on_common["date"] = pd.to_datetime(funds_on_common["date_m_id"].astype(str), format="%Y%m")
 funds_on_common["group"] = funds_on_common["outflow_fund"].map({True: "Outflow", False: "Inflow"})
 print(funds_on_common["outflow_fund"].value_counts())
