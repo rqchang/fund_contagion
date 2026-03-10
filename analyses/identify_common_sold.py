@@ -12,7 +12,7 @@ except NameError:
 sys.path.insert(0, _root)
 from utils.set_path import PROC_DIR, RAW_DIR, OUT_DIR, TEMP_DIR
 
-PLOT_END = 202403   # last month to include in plots
+PLOT_END = 202403   # last month to include in plot
 
 
 """ Read in data"""
