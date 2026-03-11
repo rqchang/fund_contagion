@@ -166,7 +166,7 @@ res2d = run_reg(df_reg, "neg_dparamt", ["common_sold", "fire_sold"] + controls,
                 "2d: −ΔParamt ~ CommonSold + FireSold + controls", absorb_r, clusters_r)
 
 
-""" Summary table """
+# """ Summary table """
 def fmt(val, decimals=4):
     return f"{val:.{decimals}f}"
 
@@ -181,28 +181,28 @@ specs = [
     ("(2a)", res2a), ("(2b)", res2b), ("(2c)", res2c), ("(2d)", res2d),
 ]
 
-rows = []
-for label, res in specs:
-    for var in ["common_sold", "fire_sold"] + CONTROLS:
-        if var in res.params.index:
-            coef = res.params[var]
-            se   = res.std_errors[var]
-            pval = res.pvalues[var]
-            rows.append({"spec": label, "variable": var,
-                         "coef": fmt(coef), "se": f"({fmt(se)})",
-                         "sig": stars(pval), "N": f"{int(res.nobs):,}"})
+# rows = []
+# for label, res in specs:
+#     for var in ["common_sold", "fire_sold"] + CONTROLS:
+#         if var in res.params.index:
+#             coef = res.params[var]
+#             se   = res.std_errors[var]
+#             pval = res.pvalues[var]
+#             rows.append({"spec": label, "variable": var,
+#                          "coef": fmt(coef), "se": f"({fmt(se)})",
+#                          "sig": stars(pval), "N": f"{int(res.nobs):,}"})
 
-summary = pd.DataFrame(rows)
-print("\n=== Contagion Test Results ===")
-print(summary.to_string(index=False))
-print("Fixed effects: fund + month | SE clustered by bond")
+# summary = pd.DataFrame(rows)
+# print("\n=== Contagion Test Results ===")
+# print(summary.to_string(index=False))
+# print("Fixed effects: fund + month | SE clustered by bond")
 
-# Test β1 > β2 in Equation 1b, 1d, 2b, 2d
-for label, res in [("(1b)", res1b), ("(1d)", res1d), ("(2b)", res2b), ("(2d)", res2d)]:
-    if "common_sold" in res.params.index and "fire_sold" in res.params.index:
-        b1, b2 = res.params["common_sold"], res.params["fire_sold"]
-        print(f"{label}: β1(CommonSold)={b1:.4f}, β2(FireSold)={b2:.4f}, "
-              f"β1>β2: {b1 > b2} (diff={b1-b2:.4f})")
+# # Test β1 > β2 in Equation 1b, 1d, 2b, 2d
+# for label, res in [("(1b)", res1b), ("(1d)", res1d), ("(2b)", res2b), ("(2d)", res2d)]:
+#     if "common_sold" in res.params.index and "fire_sold" in res.params.index:
+#         b1, b2 = res.params["common_sold"], res.params["fire_sold"]
+#         print(f"{label}: β1(CommonSold)={b1:.4f}, β2(FireSold)={b2:.4f}, "
+#               f"β1>β2: {b1 > b2} (diff={b1-b2:.4f})")
 
 
 """ Save results """
