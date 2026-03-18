@@ -15,8 +15,6 @@ from utils.set_path import PROC_DIR, OUT_DIR
 
 
 """ Parameters """
-# Pre-sample period for estimating category-level beta
-PRE_SAMPLE_END = 201112    # Dec 2011: data before the main sample used to estimate beta_cat
 
 # Fund classification thresholds (based on max share of holdings across time)
 IG_RTG_THRESH   = 10       # rating_rank <= 10 → IG
@@ -147,55 +145,21 @@ fund_flow["agg_flow_shock"] = np.where(
 print(f"AggFlowShock: {fund_flow['agg_flow_shock'].notna().sum():,} valid fund-months")
 
 
-" Category-level beta (pre-sample) "
-# Estimate one beta per fund category using pre-sample data (date_m_id <= PRE_SAMPLE_END).
-# Pooling all funds within a category produces a much more stable estimate than fund-level
-# rolling OLS, while still preserving the Bartik structure: FlowHat = beta_cat * AggFlowShock.
-
-def _beta_ols(grp):
-    """OLS slope of flow on agg_flow_shock; returns NaN if insufficient data."""
-    x = grp["agg_flow_shock"].values
-    y = grp["flow"].values
-    valid = np.isfinite(x) & np.isfinite(y)
-    if valid.sum() < 12:
-        return np.nan
-    xv, yv = x[valid], y[valid]
-    xm = xv.mean()
-    denom = ((xv - xm) ** 2).sum()
-    if denom < 1e-12:
-        return np.nan
-    return float(((xv - xm) * (yv - yv.mean())).sum() / denom)
-
-pre = fund_flow[fund_flow["date_m_id"] <= PRE_SAMPLE_END].dropna(subset=["flow", "agg_flow_shock"])
-beta_cat = (pre.groupby("fund_cat")
-               .apply(_beta_ols, include_groups=False)
-               .rename("beta_cat")
-               .reset_index())
-print("Category-level beta estimates:")
-print(beta_cat.to_string(index=False))
-
-fund_flow = fund_flow.merge(beta_cat, on="fund_cat", how="left")
-
-
 " Predicted flow "
-# FlowHat_{f,t} = beta_cat * AggFlowShock_{c(f),t}
-fund_flow["flow_hat"] = fund_flow["beta_cat"] * fund_flow["agg_flow_shock"]
+# FlowHat_{f,t} = AggFlowShock_{c(f),t} directly (no beta scaling)
+fund_flow["flow_hat"] = fund_flow["agg_flow_shock"]
 print(f"FlowHat: {fund_flow['flow_hat'].notna().sum():,} / {len(fund_flow):,} valid fund-months ({fund_flow['flow_hat'].notna().mean()*100:.1f}%)")
 
-fig, axes = plt.subplots(1, 3, figsize=(14, 4))
-for ax, col, title in zip(axes,
-                           ["agg_flow_shock", "beta_cat", "flow_hat"],
-                           [r"AggFlowShock$_{c(f),t}$",
-                            r"$\hat{\beta}_{c(f)}$ (pre-sample)",
-                            r"$\widehat{\mathrm{Flow}}_{f,t}$"]):
-    vals = fund_flow[col].dropna()
-    p1, p99 = vals.quantile(0.01), vals.quantile(0.99)
-    ax.hist(vals.clip(p1, p99), bins=50, color="steelblue", edgecolor="white", linewidth=0.3)
-    ax.axvline(0, color="black", linewidth=0.8, linestyle="--")
-    ax.set_title(title)
-    ax.set_xlabel("Value (winsorized 1/99)")
-    ax.set_ylabel("Count")
+fig, ax = plt.subplots(figsize=(7, 4))
+vals = fund_flow["agg_flow_shock"].dropna()
+p1, p99 = vals.quantile(0.01), vals.quantile(0.99)
+ax.hist(vals.clip(p1, p99), bins=50, color="steelblue", edgecolor="white", linewidth=0.3)
+ax.axvline(0, color="black", linewidth=0.8, linestyle="--")
+ax.set_title(r"AggFlowShock$_{c(f),t}$ (= FlowHat, winsorized 1/99)")
+ax.set_xlabel("Value")
+ax.set_ylabel("Fund-months")
 fig.tight_layout()
+fig.savefig(os.path.join(OUT_DIR, "plots/hist_agg_flow_shock.pdf"), bbox_inches="tight")
 plt.show()
 
 
