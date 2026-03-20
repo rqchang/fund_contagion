@@ -15,7 +15,6 @@ from utils.set_path import PROC_DIR, OUT_DIR
 
 
 """ Parameters """
-
 # Fund classification thresholds (based on max share of holdings across time)
 IG_RTG_THRESH   = 10       # rating_rank <= 10 → IG
 LONG_TMT_THRESH = 10       # tmt >= 10 years → long-duration
@@ -59,6 +58,7 @@ for col in BM_CHARS:
     bm[f"{col}_lag"] = np.where(bm["date_lag"] == bm["prev_date"], raw_lag, np.nan)
 
 bm_merge = bm[["cusip8", "date_m_id"] + [f"{c}_lag" for c in BM_CHARS]].drop_duplicates(["cusip8", "date_m_id"])
+del bm
 print(bm_merge.count())
 
 data = data.sort_values(["crsp_portno", "cusip8", "date_m_id"]).reset_index(drop=True)
@@ -92,6 +92,7 @@ fund_long  = (hc[hc["tmt_lag"] >= LONG_TMT_THRESH]
 fund_month_cls = (fund_total
                   .merge(fund_ig,   on=["crsp_portno", "date_m_id"], how="left")
                   .merge(fund_long, on=["crsp_portno", "date_m_id"], how="left"))
+del hc, fund_total, fund_ig, fund_long
 fund_month_cls[["ig_paramt", "long_paramt"]] = fund_month_cls[["ig_paramt", "long_paramt"]].fillna(0)
 fund_month_cls["shareIG"]   = fund_month_cls["ig_paramt"]   / fund_month_cls["total_paramt"]
 fund_month_cls["shareLong"] = fund_month_cls["long_paramt"] / fund_month_cls["total_paramt"]
@@ -116,10 +117,12 @@ print(f_cls["fund_cat"].value_counts())
 
 # Merge fund_cat onto the panel
 panel = pd.merge(data, f_cls[["crsp_portno", "fund_cat"]], on="crsp_portno", how="left")
+del data, fund_month_cls, bm_merge
 print("After adding MF invclass:", panel.shape)
 
 # Save down identifier
 f_cls.to_csv(os.path.join(PROC_DIR, "crsp/mf_invclass.csv"))
+del f_cls
 
 
 """ Construct IV """
@@ -135,6 +138,7 @@ cat_agg = (fund_flow.groupby(["fund_cat", "date_m_id"])
                     .agg(cat_flow_sum=("flow", "sum"), cat_n=("flow", "count"))
                     .reset_index())
 fund_flow = fund_flow.merge(cat_agg, on=["fund_cat", "date_m_id"], how="left")
+del cat_agg
 
 # Leave-one-out: subtract own flow, divide by (n-1)
 fund_flow["agg_flow_shock"] = np.where(
@@ -159,7 +163,6 @@ ax.set_title(r"AggFlowShock$_{c(f),t}$ (= FlowHat, winsorized 1/99)")
 ax.set_xlabel("Value")
 ax.set_ylabel("Fund-months")
 fig.tight_layout()
-fig.savefig(os.path.join(OUT_DIR, "plots/hist_agg_flow_shock.pdf"), bbox_inches="tight")
 plt.show()
 
 
@@ -176,6 +179,7 @@ plt.show()
 # Merge flow_hat onto the fund-bond-month panel
 panel = panel.merge(fund_flow[["crsp_portno", "date_m_id", "flow_hat"]],
                     on=["crsp_portno", "date_m_id"], how="left")
+del fund_flow
 print("After adding flow hat:", panel.shape)
 
 # Contribution of each fund-bond-month to Z: only funds with predicted outflows (flow_hat < 0)
@@ -191,6 +195,7 @@ z_full = (panel[panel["z_contrib"] != 0]
                .sum().rename("z_full").reset_index())
 
 panel = pd.merge(panel, z_full, on=["cusip8", "date_m_id"], how="left")
+del z_full
 panel["z_full"] = panel["z_full"].fillna(0)
 
 # LOO IV: for focal inflow fund f_0, subtract its own contribution (if flow_hat < 0)
@@ -214,6 +219,7 @@ plt.show()
 """ Run IV regression """
 " Inflow fund subsample "
 df_in = panel[~panel["outflow_fund"] & panel["delta_paramt"].notna()].copy().reset_index(drop=True)
+#del panel
 print(f"\nInflow fund observations: {len(df_in):,}")
 
 df_in["sale"]        = df_in["is_sale"].astype(float)
@@ -225,10 +231,11 @@ df_in["fire_sold"]   = (df_in["bond_cat"] == "fire_sold").astype(float)
 df_in["ret_eom_lag"]         = df_in["ret_eom_lag"] * 100
 df_in["bid_ask_lag"]         = df_in["bid_ask_lag"] * 100
 df_in["amt_outstanding_lag"] = df_in["amt_outstanding_lag"] / 1e6
+df_in["aum_lag"]             = df_in["aum_lag"] / 1e6
 
 # Winsorize
-WINS_COLS = ["neg_dparamt", "w_lag", "ret_eom_lag", "bid_ask_lag",
-             "cs_yield_lag", "amt_outstanding_lag", "z_iv"]
+WINS_COLS = ["neg_dparamt", "w_lag", "aum_lag", "ret_eom_lag", "bid_ask_lag",
+             "cs_yield_lag", "tmt_lag", "amt_outstanding_lag", "z_iv"]
 print("\n--- Distributions before winsorizing ---")
 print(df_in[["sale", "common_sold", "z_iv"] + WINS_COLS]
       .describe(percentiles=[.01, .05, .25, .5, .75, .95, .99]).T.to_string())
@@ -239,59 +246,68 @@ for col in WINS_COLS:
     df_in[col] = df_in[col].clip(p1, p99)
     print(f"  {col}: winsorized to [{p1:.4g}, {p99:.4g}]")
 
+n_cols = 3
+n_rows = int(np.ceil(len(WINS_COLS) / n_cols))
+fig, axes = plt.subplots(n_rows, n_cols, figsize=(14, n_rows * 3))
+axes = axes.flatten()
+for ax, col in zip(axes, WINS_COLS):
+    ax.hist(df_in[col].dropna(), bins=50, color="steelblue", edgecolor="white", linewidth=0.3)
+    ax.axvline(0, color="black", linewidth=0.8, linestyle="--")
+    ax.set_title(col)
+    ax.set_xlabel("Value (winsorized 1/99)")
+    ax.set_ylabel("Count")
+for ax in axes[len(WINS_COLS):]:
+    ax.set_visible(False)
+fig.tight_layout()
+plt.show()
 
-" First stage (bond-month level) "
-# 1[CommonSold]_{i,t} = pi * Z_{i,t} + Gamma * X_{i,t-1} + alpha_i + delta_t + u_{i,t}
-# bond FE = alpha_i, time FE = delta_t
-# Controls X: lagged bond characteristics (no fund-level controls at this stage)
-CONTROLS_FS = ["ret_eom_lag", "bid_ask_lag", "cs_yield_lag", "amt_outstanding_lag"]
 
-# Collapse to bond-month: take first observation per bond-month (Z and bond chars are bond-level)
-bm_panel = (df_in.drop_duplicates(["cusip8", "date_m_id"])
-                 [["cusip8", "date_m_id", "common_sold", "z_iv"] + CONTROLS_FS]
-                 .dropna(subset=["z_iv"] + CONTROLS_FS)
-                 .copy()
-                 .reset_index(drop=True))
-print(f"\nBond-month panel for first stage: {len(bm_panel):,}")
+" Controls "
+# Both stages use the same fund-bond-month panel → identical controls throughout.
+CONTROLS = ["ret_eom_lag", "bid_ask_lag", "cs_yield_lag", "rating_rank_lag", 
+            "tmt_lag", "amt_outstanding_lag", "w_lag", "aum_lag"]
+CONTROLS_FS = CONTROLS
+CONTROLS_SS = CONTROLS
 
-bm_panel["bond_fe"] = pd.Categorical(bm_panel["cusip8"])
-bm_panel["time_fe"] = pd.Categorical(bm_panel["date_m_id"])
-absorb_fs = bm_panel[["bond_fe", "time_fe"]]
-clust_fs  = pd.Categorical(bm_panel["cusip8"])
+# Working sample: drop missing controls and z_iv
+df_reg = df_in.dropna(subset=["z_iv"] + CONTROLS_SS).reset_index(drop=True)
+del df_in
+print(f"\nRegression sample: {len(df_reg):,}")
 
-y_fs = bm_panel["common_sold"]
-X_fs = bm_panel[["z_iv"] + CONTROLS_FS]
-res_fs = AbsorbingLS(y_fs, X_fs, absorb=absorb_fs, drop_absorbed=True).fit(
-    cov_type="clustered", clusters=clust_fs)
+df_reg["fund_fe"] = pd.Categorical(df_reg["crsp_portno"])
+df_reg["time_fe"] = pd.Categorical(df_reg["date_m_id"])
+absorb_r = df_reg[["fund_fe", "time_fe"]]
+clust_r  = pd.Categorical(df_reg["cusip8"])
+
+#df_reg.to_csv(os.path.join(PROC_DIR, "crsp/reg_panel_fit.csv"))
+
+" First stage (fund-bond-month level) "
+# 1[CommonSold]_{f,i,t} = pi * Z_{f,i,t} + Gamma * X_{i,t-1} + alpha_f + delta_t + u_{f,i,t}
+# Z_{f,i,t} is the LOO Bartik instrument; same fund FE + time FE as second stage.
+# common_sold has no within-fund variation (bond-month outcome), so fund FE absorbs
+# the fund-average commonality; identification comes from cross-bond variation within fund-time.
+y_fs  = df_reg["common_sold"]
+X_fs  = df_reg[["z_iv"] + CONTROLS_FS]
+res_fs = AbsorbingLS(y_fs, X_fs, absorb=absorb_r, drop_absorbed=True).fit(
+    cov_type="clustered", clusters=clust_r)
 print("\n--- First Stage ---")
 print(res_fs.summary)
 
 # Kleibergen-Paap style first-stage F (approximate: t-stat^2 on Z)
 t_z = res_fs.tstats["z_iv"]
 print(f"First-stage t-stat on Z: {t_z:.3f}  (approx F = {t_z**2:.2f})")
+# First-stage t-stat on Z: -14.606  (approx F = 213.33)
 
-# Fitted values of CommonSold from first stage
-bm_panel["common_sold_hat"] = res_fs.fitted_values.values
+# Get fitted values of common sold
+df_reg["common_sold_hat"] = res_fs.fitted_values.values
 
 
-# ============================================================
-# 10. Second stage (fund-bond-month level for inflow funds)
-# ============================================================
-# Sale_{f,i,t} = beta * CommonSoldHat_{i,t} + Gamma * X_{f,i,t-1} + alpha_f + delta_t + eps
-# Note: SEs do not correct for the generated regressor (CommonSoldHat); treat as approximate.
-
-CONTROLS_SS = ["w_lag", "ret_eom_lag", "bid_ask_lag", "cs_yield_lag", "amt_outstanding_lag"]
-
-df_ss = df_in.merge(bm_panel[["cusip8", "date_m_id", "common_sold_hat"]],
-                    on=["cusip8", "date_m_id"], how="inner")
-df_ss = df_ss.dropna(subset=CONTROLS_SS + ["common_sold_hat"]).reset_index(drop=True)
-print(f"\nObservations in second stage: {len(df_ss):,} "
-      f"({len(df_ss)/len(df_in)*100:.1f}% of df_in)")
-
-df_ss["fund_fe"] = pd.Categorical(df_ss["crsp_portno"])
-df_ss["time_fe"] = pd.Categorical(df_ss["date_m_id"])
-absorb_ss = df_ss[["fund_fe", "time_fe"]]
-clust_ss  = pd.Categorical(df_ss["cusip8"])
+" Second stage (fund-bond-month level) "
+# Sale_{f,i,t} = beta * CommonSoldHat_{f,i,t} + Gamma * X_{f,i,t-1} + alpha_f + delta_t + eps
+# Note: SEs do not correct for the generated regressor; treat as approximate.
+df_ss     = df_reg
+absorb_ss = absorb_r
+clust_ss  = clust_r
 
 def run_reg(df, y_col, X_cols, label, absorb_fe, clust):
     y   = df[y_col]
@@ -315,9 +331,7 @@ res_iv2b = run_reg(df_ss, "neg_dparamt", ["common_sold_hat"] + CONTROLS_SS,
                    "IV 2b: -ΔParamt ~ CommonSoldHat + controls", absorb_ss, clust_ss)
 
 
-# ============================================================
-# 11. Save results
-# ============================================================
+""" Save results """
 os.makedirs(os.path.join(OUT_DIR, "tables"), exist_ok=True)
 
 def fmt(val, decimals=4): return f"{val:.{decimals}f}"
@@ -331,9 +345,12 @@ VAR_LABELS_IV = {
     "z_iv":                r"$Z_{i,t}$",
     "common_sold_hat":     r"$\widehat{CommonSold}_{i,t}$",
     "w_lag":               r"Weight$_{f,i,t-1}$",
+    "aum_lag":             r"AUM$_{f,t-1}$ (\$B)",
     "ret_eom_lag":         r"Return$_{i,t-1}$ (\%)",
     "bid_ask_lag":         r"Bid-Ask$_{i,t-1}$ (\%)",
     "cs_yield_lag":        r"Credit Spread$_{i,t-1}$ (\%)",
+    "rating_rank_lag":     r"Rating$_{i,t-1}$",
+    "tmt_lag":             r"Maturity$_{i,t-1}$ (yrs)",
     "amt_outstanding_lag": r"Amt Outstanding$_{i,t-1}$ (\$M)",
 }
 
@@ -363,16 +380,39 @@ for name, spec_list, var_order in [
     pd.DataFrame(rows).to_csv(os.path.join(OUT_DIR, f"tables/contagion_{name}.csv"), index=False)
     print(f"Saved tables/contagion_{name}.csv")
 
+# Per-spec metadata
+HAS_CONTROLS = {
+    "(FS)":    False,
+    "(IV-1a)": False,
+    "(IV-1b)": True,
+    "(IV-2a)": False,
+    "(IV-2b)": True,
+}
+DEP_VAR_LABELS = {
+    "(FS)":    r"$1[\text{CommonSold}]_{i,t}$",
+    "(IV-1a)": r"Sale$_{f,i,t}$",
+    "(IV-1b)": r"Sale$_{f,i,t}$",
+    "(IV-2a)": r"$-\Delta$Paramt$_{f,i,t}$",
+    "(IV-2b)": r"$-\Delta$Paramt$_{f,i,t}$",
+}
+
 # LaTeX table: first stage + second stage combined
 def build_latex_iv(spec_fs, specs_ss, var_order_fs, var_order_ss,
+                   has_controls, dep_var_labels,
                    caption, label):
+    def _stars(pval):
+        if pval < 0.01: return "***"
+        if pval < 0.05: return "**"
+        if pval < 0.10: return "*"
+        return ""
+
     def cell_dict(spec_list, var_order):
         cells, nobs = {}, {}
         for lbl, res in spec_list:
             nobs[lbl] = int(res.nobs)
             for var in var_order:
                 if var in res.params.index:
-                    c = f"{res.params[var]:.4f}{stars(res.pvalues[var])}"
+                    c = f"{res.params[var]:.4f}{_stars(res.pvalues[var])}"
                     s = f"({res.std_errors[var]:.4f})"
                     cells[(lbl, var)] = (c, s)
         return cells, nobs
@@ -380,10 +420,15 @@ def build_latex_iv(spec_fs, specs_ss, var_order_fs, var_order_ss,
     cells_fs, nobs_fs = cell_dict(spec_fs,  var_order_fs)
     cells_ss, nobs_ss = cell_dict(specs_ss, var_order_ss)
 
-    all_specs  = [l for l, _ in spec_fs]  + [l for l, _ in specs_ss]
-    all_cells  = {**cells_fs, **cells_ss}
-    all_nobs   = {**nobs_fs,  **nobs_ss}
+    all_specs = [l for l, _ in spec_fs] + [l for l, _ in specs_ss]
+    all_cells = {**cells_fs, **cells_ss}
+    all_nobs  = {**nobs_fs,  **nobs_ss}
     n_cols = len(all_specs)
+    n_fs   = len(spec_fs)
+    n_ss   = len(specs_ss)
+
+    dep_var_row  = " & " + " & ".join(dep_var_labels[s] for s in all_specs) + r" \\"
+    controls_row = " & ".join(r"$\checkmark$" if has_controls.get(s, False) else "" for s in all_specs)
 
     lines = [
         r"\begin{table}[htbp]",
@@ -393,35 +438,36 @@ def build_latex_iv(spec_fs, specs_ss, var_order_fs, var_order_ss,
         r"{\small",
         r"\begin{tabular}{l" + "c" * n_cols + "}",
         r"\toprule",
-        rf" & \multicolumn{{1}}{{c}}{{First Stage}} "
-        rf"& \multicolumn{{{len(specs_ss)}}}{{c}}{{Second Stage}} \\",
-        rf"\cmidrule(lr){{2-2}}\cmidrule(lr){{3-{n_cols+1}}}",
+        rf" & \multicolumn{{{n_fs}}}{{c}}{{First Stage}} "
+        rf"& \multicolumn{{{n_ss}}}{{c}}{{Second Stage}} \\",
+        rf"\cmidrule(lr){{2-{n_fs+1}}}\cmidrule(lr){{{n_fs+2}-{n_cols+1}}}",
         " & " + " & ".join(all_specs) + r" \\",
-        rf" & $1[\text{{CommonSold}}]_{{i,t}}$"
-        + " & Sale$_{{f,i,t}}$" * 2
-        + r" & $-\Delta$Paramt$_{{f,i,t}}$" * 2 + r" \\",
+        dep_var_row,
         r"\midrule",
     ]
 
-    all_var_order = list(dict.fromkeys(var_order_fs + var_order_ss))
+    # FS-only vars first, then SS-only vars, then shared controls
+    all_var_order = (
+        [v for v in var_order_fs if v not in var_order_ss] +
+        [v for v in var_order_ss if v not in var_order_fs] +
+        [v for v in var_order_fs if v in var_order_ss]
+    )
     for var in all_var_order:
-        lbl_str = VAR_LABELS_IV.get(var, var)
+        lbl_str  = VAR_LABELS_IV.get(var, var)
         coef_row = lbl_str
         se_row   = ""
         for col in all_specs:
-            key = (col, var)
-            c, s = all_cells.get(key, ("", ""))
+            c, s = all_cells.get((col, var), ("", ""))
             coef_row += f" & {c}"
             se_row   += f" & {s}"
         lines.append(coef_row + r" \\")
         lines.append(se_row   + r" \\")
 
-    controls_row  = [r"$\checkmark$" if i >= 1 else "" for i in range(n_cols)]
     lines += [
         r"\midrule",
-        r"Fund / Bond FE & " + " & ".join([r"$\checkmark$"] * n_cols) + r" \\",
+        r"Fund FE & " + " & ".join([r"$\checkmark$"] * n_cols) + r" \\",
         r"Month FE & "       + " & ".join([r"$\checkmark$"] * n_cols) + r" \\",
-        r"Controls & "       + " & ".join(controls_row) + r" \\",
+        r"Controls & "       + controls_row + r" \\",
         r"\midrule",
         r"$N$ & " + " & ".join(f"{all_nobs[c]:,}" for c in all_specs) + r" \\",
         r"\bottomrule",
@@ -430,9 +476,9 @@ def build_latex_iv(spec_fs, specs_ss, var_order_fs, var_order_ss,
         r"\begin{tablenotes}\small",
         r"\item \textit{Notes:} Instrument $Z_{i,t}$ is the Bartik shift-share predicted sale"
         r" pressure (Eq.~\ref{eqn:iv}), constructed leave-one-out.",
-        r"First stage: bond and month FEs absorbed; SE clustered by bond.",
-        r"Second stage: fund and month FEs absorbed; SE clustered by bond.",
-        r"Second-stage SEs do not correct for the generated regressor.",
+        r"First stage (fund-bond-month): fund and month FEs absorbed.",
+        r"Second stage (fund-bond-month): fund and month FEs absorbed; same controls.",
+        r"SE clustered by bond. Second-stage SEs do not correct for the generated regressor.",
         r"*** $p<0.01$, ** $p<0.05$, * $p<0.10$.",
         r"\end{tablenotes}",
         r"\end{table}",
@@ -441,14 +487,16 @@ def build_latex_iv(spec_fs, specs_ss, var_order_fs, var_order_ss,
 
 
 tex_iv = build_latex_iv(
-    specs_fs   = specs_fs,
-    specs_ss   = specs_iv,
-    var_order_fs = ["z_iv"] + CONTROLS_FS,
-    var_order_ss = ["common_sold_hat"] + CONTROLS_SS,
+    spec_fs        = specs_fs,
+    specs_ss       = specs_iv,
+    var_order_fs   = ["z_iv"] + CONTROLS_FS,
+    var_order_ss   = ["common_sold_hat"] + CONTROLS_SS,
+    has_controls   = HAS_CONTROLS,
+    dep_var_labels = DEP_VAR_LABELS,
     caption = "Contagion Test: IV Estimates (Bartik Shift-Share)",
     label   = "tab:contagion_iv",
 )
-tex_path = os.path.join(OUT_DIR, "tables/contagion_iv.tex")
+tex_path = os.path.join(OUT_DIR, "tables/contagion_iv2.tex")
 with open(tex_path, "w") as f:
     f.write(tex_iv)
 print(f"Saved {tex_path}")
