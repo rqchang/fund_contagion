@@ -240,6 +240,23 @@ df_reg.to_csv(os.path.join(PROC_DIR, "crsp/reg_panel_fit2.csv"))
 del df_in
 print(f"\nRegression sample: {len(df_reg):,}")
 
+df_reg = pd.read_csv(os.path.join(PROC_DIR, "crsp/reg_panel_fit2.csv"))
+
+# Unit adjustments (applied after CSV load, post-winsorization):
+#   z_iv_cat, outflow_intensity: fraction → % (×100); FS coefficient π unchanged,
+#     control coefficients ×100 (avoids 0.0000 display); SS β on oi_hat ÷100.
+#   w_lag: fraction → % (×100).
+#   neg_dparamt: raw par units → ÷1000; combined with OI×100,
+#     SS β on oi_hat becomes β_orig / 100000 (e.g., -16424 → -0.164).
+df_reg["z_iv_cat"]          = df_reg["z_iv_cat"]          * 100
+df_reg["outflow_intensity"] = df_reg["outflow_intensity"]  * 100
+df_reg["w_lag"]             = df_reg["w_lag"]              * 100
+df_reg["neg_dparamt"]       = df_reg["neg_dparamt"]        / 1e3
+
+# Binary common_sold indicator (bond-month level: 1 if outflow funds commonly sell bond i at t)
+df_reg["common_sold"] = (df_reg["bond_cat"] == "common_sold").astype(float)
+print(f"CommonSold: {df_reg['common_sold'].mean():.3%} of inflow fund-bond-months")
+
 # Fixed effects: fund FE + time FE in both stages (α_f + δ_t)
 df_reg["fund_fe"] = pd.Categorical(df_reg["crsp_portno"])
 df_reg["time_fe"] = pd.Categorical(df_reg["date_m_id"])
@@ -263,6 +280,7 @@ def print_fs_F(res, iv_var="z_iv_cat"):
 
 
 " First stage "
+# Flow Intensity
 # OutflowIntensity_{-f,i,t} = π Z_{-f,i,t} + Γ X_{i,t-1} + α_f + δ_t + u_{f,i,t}
 print("\n" + "="*70)
 print("FIRST STAGE: OutflowIntensity ~ Z_cat + bond controls + fund FE + time FE")
@@ -274,6 +292,16 @@ print_fs_F(res_fs, "z_iv_cat")
 
 # recover fitted values
 df_reg["oi_hat"] = res_fs.fitted_values.values
+
+# Binary CommonSold
+print("\n" + "="*70)
+print("FIRST STAGE (CS): CommonSold ~ Z_cat + bond controls + fund FE + time FE")
+print("="*70)
+
+res_fs_cs = run_reg(df_reg, "common_sold", ["z_iv_cat"] + CONTROLS_FS,
+                    "FS (CS): CommonSold ~ Z_cat", absorb_r, clust_r)
+print_fs_F(res_fs_cs, "z_iv_cat")
+df_reg["cs_hat"] = res_fs_cs.fitted_values.values
 
 
 " Second stage "
@@ -287,15 +315,48 @@ res_ss1b = run_reg(df_reg, "sale",        ["oi_hat"] + CONTROLS_SS, "SS-1b: Sale
 res_ss2a = run_reg(df_reg, "neg_dparamt", ["oi_hat"],               "SS-2a: -ΔPar ~ OIhat",         absorb_r, clust_r)
 res_ss2b = run_reg(df_reg, "neg_dparamt", ["oi_hat"] + CONTROLS_SS, "SS-2b: -ΔPar ~ OIhat + ctrl",  absorb_r, clust_r)
 
+print("\n" + "="*70)
+print("SECOND STAGE (CS): binary CommonSold endogenous")
+print("="*70)
+
+res_cs1a = run_reg(df_reg, "sale",        ["cs_hat"],               "SS-1a(CS): Sale ~ CShat",          absorb_r, clust_r)
+res_cs1b = run_reg(df_reg, "sale",        ["cs_hat"] + CONTROLS_SS, "SS-1b(CS): Sale ~ CShat + ctrl",   absorb_r, clust_r)
+res_cs2a = run_reg(df_reg, "neg_dparamt", ["cs_hat"],               "SS-2a(CS): -ΔPar ~ CShat",         absorb_r, clust_r)
+res_cs2b = run_reg(df_reg, "neg_dparamt", ["cs_hat"] + CONTROLS_SS, "SS-2b(CS): -ΔPar ~ CShat + ctrl",  absorb_r, clust_r)
+
+
+""" Stress subgroup regressions """
+stress_results = {}
+for tag, mask in [("Hi", df_reg["stress"] == 1), ("Lo", df_reg["stress"] == 0)]:
+    df_sub = df_reg[mask].copy().reset_index(drop=True)
+    df_sub["fund_fe"] = pd.Categorical(df_sub["crsp_portno"])
+    df_sub["time_fe"] = pd.Categorical(df_sub["date_m_id"])
+    absorb_sub = df_sub[["fund_fe", "time_fe"]]
+    clust_sub  = pd.Categorical(df_sub["cusip8"])
+    lbl = "High Stress" if tag == "Hi" else "Low Stress"
+    print(f"\n{'='*70}\nSTRESS SUBGROUP: {lbl} ({len(df_sub):,} obs)\n{'='*70}")
+
+    res_fs_s = run_reg(df_sub, "outflow_intensity", ["z_iv_cat"] + CONTROLS_FS,
+                       f"FS ({lbl})", absorb_sub, clust_sub)
+    print_fs_F(res_fs_s, "z_iv_cat")
+    df_sub["oi_hat_s"] = res_fs_s.fitted_values.values
+
+    res_1b = run_reg(df_sub, "sale",        ["oi_hat_s"] + CONTROLS_SS,
+                     f"SS-1b ({lbl}): Sale + ctrl",    absorb_sub, clust_sub)
+    res_2b = run_reg(df_sub, "neg_dparamt", ["oi_hat_s"] + CONTROLS_SS,
+                     f"SS-2b ({lbl}): -ΔPar + ctrl",  absorb_sub, clust_sub)
+    stress_results[tag] = {"fs": res_fs_s, "ss1b": res_1b, "ss2b": res_2b}
+
 
 """ Save results """
 os.makedirs(os.path.join(OUT_DIR, "tables"), exist_ok=True)
 
 VAR_LABELS = {
-    "z_iv_cat":          r"$Z_{-f,i,t}$ (Same-category)",
-    "oi_hat":            r"$\widehat{\text{OutflowIntensity}}_{-f,i,t}$",
-    "oi_hat_s":          r"$\widehat{\text{OutflowIntensity}}_{-f,i,t}$",
-    "w_lag":             r"Weight$_{f,i,t-1}$",
+    "z_iv_cat":          r"$Z_{-f,i,t}$ (Same-category, \%)",
+    "oi_hat":            r"$\widehat{\text{OutflowIntensity}}_{-f,i,t}$ (\%)",
+    "oi_hat_s":          r"$\widehat{\text{OutflowIntensity}}_{-f,i,t}$ (\%)",
+    "cs_hat":            r"$\widehat{1[\text{CommonSold}]}_{i,t}$",
+    "w_lag":             r"Weight$_{f,i,t-1}$ (\%)",
     "aum_lag":           r"AUM$_{f,t-1}$ (\$B)",
     "ret_eom_lag":       r"Return$_{i,t-1}$ (\%)",
     "bid_ask_lag":       r"Bid-Ask$_{i,t-1}$ (\%)",
@@ -406,20 +467,42 @@ tex1 = build_latex_iv(
     var_order_ss   = ["oi_hat"]   + CONTROLS_SS,
     has_controls   = {"(FS)": False, "(IV-1a)": False, "(IV-1b)": True,
                       "(IV-2a)": False, "(IV-2b)": True},
-    dep_var_labels = {"(FS)":    r"OutflowIntensity$_{-f,i,t}$",
+    dep_var_labels = {"(FS)":    r"OutflowIntensity$_{-f,i,t}$ (\%)",
                       "(IV-1a)": r"Sale$_{f,i,t}$",
                       "(IV-1b)": r"Sale$_{f,i,t}$",
-                      "(IV-2a)": r"$-\Delta$Paramt$_{f,i,t}$",
-                      "(IV-2b)": r"$-\Delta$Paramt$_{f,i,t}$"},
+                      "(IV-2a)": r"$-\Delta$Paramt$_{f,i,t}$ (\$K)",
+                      "(IV-2b)": r"$-\Delta$Paramt$_{f,i,t}$ (\$K)"},
     caption = r"Contagion Test: IV Estimates (Same-Category Bartik, Shared Holdings)",
     label   = "tab:contagion_iv_fix1",
 )
 with open(os.path.join(OUT_DIR, "tables/contagion_iv_fix.tex"), "w") as f:
     f.write(tex1)
+print("Saved contagion_iv_fix.tex")
 
 
+# ── Table 2: Binary CommonSold endogenous ─────────────────────────────────────
+tex2 = build_latex_iv(
+    spec_fs        = [("(FS-CS)", res_fs_cs)],
+    specs_ss       = [("(CS-1a)", res_cs1a), ("(CS-1b)", res_cs1b),
+                      ("(CS-2a)", res_cs2a), ("(CS-2b)", res_cs2b)],
+    var_order_fs   = ["z_iv_cat"] + CONTROLS_FS,
+    var_order_ss   = ["cs_hat"]   + CONTROLS_SS,
+    has_controls   = {"(FS-CS)": False, "(CS-1a)": False, "(CS-1b)": True,
+                      "(CS-2a)": False, "(CS-2b)": True},
+    dep_var_labels = {"(FS-CS)":  r"$1[\text{CommonSold}]_{i,t}$",
+                      "(CS-1a)":  r"Sale$_{f,i,t}$",
+                      "(CS-1b)":  r"Sale$_{f,i,t}$",
+                      "(CS-2a)":  r"$-\Delta$Paramt$_{f,i,t}$",
+                      "(CS-2b)":  r"$-\Delta$Paramt$_{f,i,t}$"},
+    caption = r"Contagion Test: IV Estimates (Binary CommonSold Endogenous, Same-Category Bartik)",
+    label   = "tab:contagion_iv_cs",
+)
+with open(os.path.join(OUT_DIR, "tables/contagion_iv_cs.tex"), "w") as f:
+    f.write(tex2)
+print("Saved contagion_iv_cs.tex")
 
-# ── Tables 2a/2b: Stress subgroups ───────────────────────────────────────────
+
+# ── Tables 3a/3b: Stress subgroups ───────────────────────────────────────────
 for tag, file_sfx in [("Hi", "stress_hi"), ("Lo", "stress_lo")]:
     r = stress_results[tag]
     lbl_long = ("High-Stress Months (above-median credit spread)"
@@ -431,9 +514,9 @@ for tag, file_sfx in [("Hi", "stress_hi"), ("Lo", "stress_lo")]:
         var_order_fs   = ["z_iv_cat"] + CONTROLS_FS,
         var_order_ss   = ["oi_hat_s"] + CONTROLS_SS,
         has_controls   = {"(FS)": False, "(IV-1b)": True, "(IV-2b)": True},
-        dep_var_labels = {"(FS)":    r"OutflowIntensity$_{-f,i,t}$",
+        dep_var_labels = {"(FS)":    r"OutflowIntensity$_{-f,i,t}$ (\%)",
                           "(IV-1b)": r"Sale$_{f,i,t}$",
-                          "(IV-2b)": r"$-\Delta$Paramt$_{f,i,t}$"},
+                          "(IV-2b)": r"$-\Delta$Paramt$_{f,i,t}$ (\$K)"},
         caption = rf"Contagion Test: {lbl_long}",
         label   = f"tab:contagion_iv_{file_sfx}",
     )
